@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { hexToBytes, keccak256 } from "viem";
 import { encrypt, decrypt, secp256k1 } from "../src/ecies.mjs";
-import { encodeOrder, openResult, orderContext, CIPHERTEXT_LEN, Side } from "../src/order.mjs";
+import { encodeOrder, encodeLotSell, openResult, orderContext, remainderId, CIPHERTEXT_LEN, Side } from "../src/order.mjs";
+import { bytesToHex } from "viem";
 
 const fx = JSON.parse(readFileSync(new URL("../../contracts/test/fixtures/e2e.json", import.meta.url), "utf8"));
 
@@ -51,4 +52,15 @@ test("ECIES tur dönüşü, AAD bağlama ve sabit emir boyutu", async () => {
   assert.deepEqual(await decrypt(sk, ct, new Uint8Array([1, 2])), order);
   await assert.rejects(decrypt(sk, ct, new Uint8Array([9])));
   assert.equal(keccak256(ct).length, 66);
+});
+
+// Aynı vektör tee-core/src/order.rs `lot_sell_matches_js_vector` testinde.
+test("kilitli lot satışı (v3) kodlaması ve kalan not kimliği Rust ile aynı", () => {
+  const lot = "0x" + "09".repeat(32);
+  assert.equal(
+    bytesToHex(encodeLotSell({ poolId: 4, pctBps: 5000, lotOrderId: lot, auth: 7n })),
+    "0x0301000000041388090909090909090909090909090909090909090909090909090909090909090900000000000000000000000000000000000000000000000000000000000000070000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  );
+  assert.equal(remainderId(lot), "0x4ab812e6bf5cbeed1d99994683f12201e49a1b61734b689a4825dfe4877ba48c");
+  assert.throws(() => encodeLotSell({ poolId: 4, pctBps: 0, lotOrderId: lot, auth: 7n }));
 });

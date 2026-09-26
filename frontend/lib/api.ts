@@ -93,6 +93,10 @@ export type OrderStatus = {
   sealedResult?: string;
   unlockTime?: number;
   kb?: string | null;
+  /** Lot satışı: satılan lot (emir kimliği) */
+  lot?: string | null;
+  /** Lot satışının sonucu: gerçekleştiyse kalan not (kilit açılınca kullanıcı çözer) */
+  lotUpdate?: { sellOrderId: string; filled: boolean; remainderCommitment: string; sealedRemainder: string } | null;
 };
 
 async function get<T>(path: string): Promise<T> {

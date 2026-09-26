@@ -2,6 +2,9 @@
 //! - `Refunded` → `returnRefunded` hemen (harcanan kısım not olarak geri döner)
 //! - `Filled`   → kilit açılınca `claimNote`
 //!
+//! - Lot satışı `Refunded` → işlem yok (not harcanmadı; lot settlement'ta serbest kaldı)
+//! - Satışı bekleyen lot → claim edilmez (kontrat reddeder); satış settle edilince tekrar denenir
+//!
 //! İkisi de izinsiz (permissionless) ve miktar/adres sızdırmaz; kullanıcının hiçbir şey
 //! yapmasına gerek kalmaz, işlemi kimin gönderdiği de görünmez (relayer gönderir).
 
@@ -15,6 +18,8 @@ use crate::{chain::Chain, index::Indexer};
 
 /// Tek adımda en fazla bu kadar işlem (döngü diğer görevleri bekletmesin).
 const MAX_PER_TICK: usize = 32;
+/// `DarkVault.LOT_PENDING`
+const LOT_PENDING: u8 = 1;
 
 #[derive(Default)]
 pub struct Claimer {
@@ -38,6 +43,11 @@ impl Claimer {
                     if r.status == OrderStatus::Filled && now < b.unlock_time {
                         continue;
                     }
+                    let is_lot_sell = st.lot_of(&FixedBytes(r.order_id)).is_some();
+                    if r.status == OrderStatus::Refunded && is_lot_sell {
+                        self.done.insert(r.order_id);
+                        continue;
+                    }
                     work.push((b.batch_id, r.clone(), merkle_proof(&leaves, i)));
                 }
             }
@@ -48,6 +58,10 @@ impl Claimer {
             let id = FixedBytes(r.order_id);
             if chain.vault.orders(id).call().await?.done {
                 self.done.insert(r.order_id);
+                continue;
+            }
+            // Lot satışı bekliyorsa (1) claim reddedilir; satış settle edilince yeniden denenir.
+            if r.status == OrderStatus::Filled && chain.vault.lotState(id).call().await? == LOT_PENDING {
                 continue;
             }
             let proof: Vec<FixedBytes<32>> = proof.into_iter().map(FixedBytes).collect();

@@ -199,6 +199,16 @@ mod tests {
     }
 
     #[test]
+    fn lot_sell_matches_js_vector() {
+        // sdk/test/crosslang.test.mjs ile aynı vektör
+        let mut auth = [0u8; 32];
+        auth[31] = 7;
+        let l = LotSell { pool_id: 4, pct_bps: 5_000, lot_order_id: [9; 32], auth };
+        assert_eq!(hex::encode(l.encode()), "0301000000041388090909090909090909090909090909090909090909090909090909090909090900000000000000000000000000000000000000000000000000000000000000070000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
+        assert_eq!(hex::encode(crate::reveal::remainder_id(&[9; 32])), "4ab812e6bf5cbeed1d99994683f12201e49a1b61734b689a4825dfe4877ba48c");
+    }
+
+    #[test]
     fn lot_sell_roundtrip_and_validation() {
         let l = LotSell { pool_id: 4, pct_bps: 5_000, lot_order_id: [9; 32], auth: random_field() };
         let b = l.encode();

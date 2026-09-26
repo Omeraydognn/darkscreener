@@ -47,12 +47,20 @@ sol! {
             bytes32 commitment;
             bytes sealedResult;
         }
+        struct LotUpdate {
+            bytes32 sellOrderId;
+            bool filled;
+            bytes32 remainderCommitment;
+            bytes sealedRemainder;
+        }
 
         event NoteInserted(uint256 indexed commitment, uint32 index);
         event PoolCreated(uint32 indexed poolId, address indexed baseToken, uint64 indexed window, uint128 base, uint128 quote);
         event OrderSubmitted(uint64 indexed window, bytes32 indexed orderId, uint8 shard, uint32 index, uint256 spendCommitment, bytes ciphertext);
         event BatchSettled(uint64 indexed batchId, uint64 indexed window, bytes32 resultsRoot, uint64 unlockRound, uint64 unlockTime);
         event BatchData(uint64 indexed batchId, bytes newSealedState, bytes capsule, bytes sealedSummary, Result[] results);
+        event LotSellSubmitted(bytes32 indexed orderId, bytes32 indexed lot);
+        event BatchLots(uint64 indexed batchId, LotUpdate[] lots);
 
         error Escaped();
         error NotEscaped();
@@ -81,6 +89,8 @@ sol! {
         error AlreadySettled();
         error NotOwner();
         error InvalidReveal();
+        error LotUnavailable();
+        error LotMismatch();
         error NotRevealed();
 
         function quoteToken() external view returns (address);
@@ -95,9 +105,12 @@ sol! {
         function ordersHash(uint64 window) external view returns (bytes32);
         function windowPools(uint64 window) external view returns (uint32[] memory ids, bytes32 poolsChain);
         function orders(bytes32 orderId) external view returns (uint64 window, bool done, uint256 spendCommitment);
+        function lotState(bytes32 lot) external view returns (uint8);
+        function lastSettledWindow() external view returns (uint64);
         function batches(uint64 batchId) external view returns (bytes32 resultsRoot, uint64 window, uint64 unlockTime, bytes32 reservesCommitment);
 
-        function settleBatch(SettleParams calldata p, Result[] calldata results) external;
+        function settleBatch(SettleParams calldata p, Result[] calldata results, LotUpdate[] calldata lots) external;
+        function submitLotSell(bytes calldata ciphertext, bytes32 lot) external returns (bytes32 orderId);
         function submitShieldedOrder(bytes calldata ciphertext, SpendProof calldata p) external returns (bytes32 orderId);
         function withdraw(SpendProof calldata p, address token, uint128 amount, uint256 spendBlinding, address recipient) external;
         function claimNote(uint64 batchId, bytes32 orderId, uint256 commitment, bytes32 sealedResultHash, bytes32[] calldata proof) external;
