@@ -26,6 +26,9 @@ export function TradeBox({ pool }: { pool: Pool | undefined }) {
 
   const pos = wallet && book && pool ? positions(wallet, book, [pool])[0] : undefined;
   const held = pos?.held ?? 0n;
+  const lots = wallet && book && pool ? wallet.sellableLots(book, pool.poolId) : [];
+  const pending = wallet && book && pool ? wallet.pendingLots(book, pool.poolId) : { settling: 0, selling: 0 };
+  const canSell = held > 0n || lots.length > 0;
 
   let buyRaw = 0n;
   let buyErr: string | undefined;
@@ -66,7 +69,6 @@ export function TradeBox({ pool }: { pool: Pool | undefined }) {
       </div>
     );
 
-  const unlockIn = pos?.nextBuyUnlock ? pos.nextBuyUnlock - now : undefined;
 
   return (
     <div className="trade-preview grid gap-4">
@@ -126,7 +128,7 @@ export function TradeBox({ pool }: { pool: Pool | undefined }) {
             if (!pool || !info) return;
             run("Hazırlanıyor", async (step) => {
               await wallet.sell(info, pool, sellPct, step);
-              return `%${sellPct} gizli satış gönderildi. Satış gelirini 7 gün sonra göreceksin.`;
+              return `%${sellPct} gizli satış gönderildi. Satış gelirini 7 gün sonra göreceksin.${lots.length ? " Kilitli alımların da bu yüzdeyle satıldı; miktarı enclave hesaplar." : ""}`;
             });
           }}
         >
@@ -152,11 +154,18 @@ export function TradeBox({ pool }: { pool: Pool | undefined }) {
             <p><span>Satılacak miktar</span><strong><Lock size={12} /> Gösterilmez</strong></p>
             <p><span>Satış geliri</span><strong><Clock3 size={12} /> 7 gün sonra</strong></p>
           </div>
-          {held === 0n ? (
+          {lots.length > 0 && (
+            <p className="text-xs text-muted">
+              Kilidi açılmamış alımların da bu yüzdeyle satılır. Miktarı sen de bilmezsin; enclave hesaplar ve satış gelirini 7 gün sonra görürsün.
+            </p>
+          )}
+          {!canSell ? (
             <p className="rounded-md border border-dashed border-line p-3 text-center text-xs text-muted">
-              {pos?.lockedBuys
-                ? `Alımının kilidi ${unlockIn && unlockIn > 0 ? `${duration(unlockIn)} sonra` : "birazdan"} açılacak; token'ların hesabına geçince satabilirsin.`
-                : `Satılabilir ${pool?.base.symbol ?? "token"} yok. Önce gizli alım yap.`}
+              {pending.settling
+                ? "Alımın işleme alınıyor; pencere kapanıp işlenince (birkaç dakika) kilitliyken de satabilirsin."
+                : pending.selling
+                  ? "Önceki satış emrin işleniyor; işlenince kalan kısmı yeniden satabilirsin."
+                  : `Satılabilir ${pool?.base.symbol ?? "token"} yok. Önce gizli alım yap.`}
             </p>
           ) : (
             <button type="submit" className="connect-button btn-primary" disabled={!!busy || !sellValid || !pool || !info}>

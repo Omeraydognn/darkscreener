@@ -27,7 +27,6 @@ export function Explore() {
   const [open, setOpen] = useState<NewsItem | null>(null);
   const [sort, setSort] = useState<"news" | "new">("news");
 
-  const h = (id: number) => histories.data?.[id]?.points.at(-1)?.demo ?? false;
   const rows = useMemo(() => {
     const list = [...(pools ?? [])];
     list.sort((a, b) => (sort === "news" ? b.news24h - a.news24h || a.poolId - b.poolId : b.createdAt - a.createdAt));
@@ -106,7 +105,7 @@ export function Explore() {
                       ) : <span className="text-muted">—</span>}
                     </td>
                     <td className="num text-right">{p.news24h}</td>
-                    <td className="num text-right">{stats?.price != null ? <>{fmtPrice(stats.price)} ${h(p.poolId) && <span className="demo-badge ml-2" title="Testnet öncesi örnek geçmiş">DEMO</span>}</> : <span className="text-muted">Kilitli</span>}</td>
+                    <td className="num text-right">{stats?.price != null ? <>{fmtPrice(stats.price)} $</> : <span className="text-muted">Kilitli</span>}</td>
                     <td className={`num text-right ${delta(stats)}`}>{fmtPct(stats?.change[2].value)}</td>
                     <td className="num text-right">{stats?.tvl != null ? `${fmtCompact(stats.tvl)} $` : "—"}</td>
                     <td className="num text-right"><span className="inline-flex items-center gap-1"><LockKeyhole size={12} className="text-muted" />{locked ?? "—"}</span></td>

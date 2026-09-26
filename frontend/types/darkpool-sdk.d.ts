@@ -34,6 +34,18 @@ declare module "darkpool-sdk/order.mjs" {
     vault: string,
     order: { side: number; poolId: number; amountIn: bigint; recipientPub: Uint8Array; spendBlinding: bigint; owner: bigint },
   ): Promise<Uint8Array>;
+  export function encryptLotSell(
+    enclavePub: Uint8Array,
+    chainId: number,
+    vault: string,
+    lotSell: { poolId: number; pctBps: number; lotOrderId: string; auth: bigint },
+  ): Promise<Uint8Array>;
+  export function openRemainder(
+    kb: Uint8Array,
+    eciesSecret: Uint8Array,
+    sellOrderId: string,
+    sealedRemainder: Uint8Array,
+  ): Promise<{ poolId: number; outToken: string; amountOut: bigint; blinding: bigint; owner: bigint }>;
   export function orderContext(ciphertext: Uint8Array): bigint;
   export function openResult(
     kb: Uint8Array,

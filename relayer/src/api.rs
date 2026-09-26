@@ -11,6 +11,7 @@
 //! | GET  /v1/notes?from=&limit= | not ağacı yaprakları (istemci ağacı buradan kurar) |
 //! | GET  /v1/batches/{id}   | kapsül, özet, sonuçlar (7 gün sonra açmak için) |
 //! | POST /v1/orders         | { ciphertext, proof } → submitShieldedOrder |
+//! | POST /v1/lot-sells      | { ciphertext, lot } → submitLotSell (kilitli alımı yüzdeyle sat) |
 //! | POST /v1/withdrawals    | { proof, token, amount, spendBlinding, recipient } → withdraw |
 //! | GET  /v1/pools          | havuzlar + token bilgisi + proje meta verisi |
 //! | GET  /v1/pools/{id}/history | 7 gün gecikmeli "ghost chart": açılmış batch noktaları + kilitli batch'ler |
@@ -65,6 +66,7 @@ pub fn router(ctx: Arc<AppCtx>) -> Router {
         .route("/v1/batches/{id}", get(batch))
         .route("/v1/orders", post(submit_order))
         .route("/v1/orders/{id}", get(order_status))
+        .route("/v1/lot-sells", post(submit_lot_sell))
         .route("/v1/withdrawals", post(withdraw))
         .route("/v1/pools", get(pools))
         .route("/v1/pools/{id}/history", get(history))
@@ -257,15 +259,26 @@ async fn batch(State(ctx): State<Arc<AppCtx>>, Path(id): Path<u64>) -> Result<Js
             "commitment": r.commitment,
             "sealedResult": r.sealedResult,
         })).collect::<Vec<_>>(),
+        "lots": b.lots.iter().map(lot_json).collect::<Vec<_>>(),
     })))
+}
+
+fn lot_json(l: &IDarkVault::LotUpdate) -> Value {
+    json!({
+        "sellOrderId": l.sellOrderId,
+        "filled": l.filled,
+        "remainderCommitment": l.remainderCommitment,
+        "sealedRemainder": l.sealedRemainder,
+    })
 }
 
 /// Kullanıcının kendi emrinin durumu: hangi batch'te, sonucu, kilit ve (açıldıysa) K_b.
 /// Sonucun iç katmanı yalnızca emir sahibinin görüntüleme anahtarıyla açılır.
 async fn order_status(State(ctx): State<Arc<AppCtx>>, Path(id): Path<B256>) -> Result<Json<Value>, ApiError> {
     let st = ctx.index.state.read().await;
-    let submitted = st.windows.iter().find_map(|(w, rec)| rec.orders.iter().any(|o| o.order_id == id).then_some(*w));
-    let Some(window) = submitted else {
+    let submitted =
+        st.windows.iter().find_map(|(w, rec)| rec.orders.iter().find(|o| o.order_id == id).map(|o| (*w, o.lot)));
+    let Some((window, lot)) = submitted else {
         return Err(ApiError(StatusCode::NOT_FOUND, "order not indexed yet".into()));
     };
     for b in st.batches.values().filter(|b| b.window == window) {
@@ -283,11 +296,14 @@ async fn order_status(State(ctx): State<Arc<AppCtx>>, Path(id): Path<B256>) -> R
                 "sealedResult": r.sealedResult,
                 "unlockTime": b.unlock_time,
                 "kb": kb,
+                // Lot satışı: satılan lot ve sonucu (kalan not, kilit açılınca kullanıcı çözer)
+                "lot": lot,
+                "lotUpdate": b.lots.iter().find(|l| l.sellOrderId == id).map(lot_json),
                 "merkleProof": dark_tee_core::batch::merkle_proof(&leaves, i).iter().map(|p| format!("0x{}", hex::encode(p))).collect::<Vec<_>>(),
             })));
         }
     }
-    Ok(Json(json!({ "orderId": id, "window": window, "windowEnd": ctx.chain.window_end(window), "batchId": null })))
+    Ok(Json(json!({ "orderId": id, "window": window, "windowEnd": ctx.chain.window_end(window), "batchId": null, "lot": lot })))
 }
 
 #[derive(Deserialize)]
@@ -310,6 +326,31 @@ async fn submit_order(
     let chain = &ctx.chain;
     let tx = chain
         .send(&format!("submitShieldedOrder {order_id}"), chain.vault.submitShieldedOrder(req.ciphertext, proof))
+        .await?;
+    Ok(Json(json!({ "orderId": order_id, "txHash": tx })))
+}
+
+#[derive(Deserialize)]
+struct LotSellReq {
+    ciphertext: Bytes,
+    lot: B256,
+}
+
+/// Kilidi açılmamış bir alımı miktarını bilmeden yüzdeyle satar. Not harcanmadığı için kanıt
+/// yoktur; sahipliği ciphertext içindeki `auth` kanıtlar (yalnızca enclave doğrular).
+async fn submit_lot_sell(
+    State(ctx): State<Arc<AppCtx>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(req): Json<LotSellReq>,
+) -> Result<Json<Value>, ApiError> {
+    ctx.limiter.check(peer.ip())?;
+    if req.ciphertext.len() != dark_tee_core::order::CIPHERTEXT_LEN {
+        return Err(bad("ciphertext length"));
+    }
+    let order_id = B256::from(keccak(&req.ciphertext));
+    let chain = &ctx.chain;
+    let tx = chain
+        .send(&format!("submitLotSell {order_id} (lot {})", req.lot), chain.vault.submitLotSell(req.ciphertext, req.lot))
         .await?;
     Ok(Json(json!({ "orderId": order_id, "txHash": tx })))
 }

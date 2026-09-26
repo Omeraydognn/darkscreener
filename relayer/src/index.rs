@@ -25,6 +25,8 @@ pub struct OrderRec {
     pub index: u32,
     pub spend_commitment: U256,
     pub ciphertext: Bytes,
+    /// `submitLotSell` ile gelen kilitli lot satışı: satılan lotun (emir) kimliği
+    pub lot: Option<B256>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -45,6 +47,8 @@ pub struct BatchRec {
     pub capsule: Bytes,
     pub sealed_summary: Bytes,
     pub results: Vec<IDarkVault::Result>,
+    /// Bu batch'teki lot satışlarının sonuçları (`BatchLots`)
+    pub lots: Vec<IDarkVault::LotUpdate>,
 }
 
 impl BatchRec {
@@ -59,6 +63,18 @@ impl BatchRec {
                 sealed_result: r.sealedResult.to_vec(),
             })
             .collect()
+    }
+}
+
+impl IndexState {
+    /// Bir emrin settle edilmiş sonucu (lot satışında lot notunu buradan alırız).
+    pub fn result_of(&self, order_id: &B256) -> Option<&IDarkVault::Result> {
+        self.batches.values().flat_map(|b| b.results.iter()).find(|r| r.orderId == *order_id)
+    }
+
+    /// Emir bir lot satışıysa satılan lot.
+    pub fn lot_of(&self, order_id: &B256) -> Option<B256> {
+        self.windows.values().flat_map(|w| w.orders.iter()).find(|o| o.order_id == *order_id).and_then(|o| o.lot)
     }
 }
 
@@ -159,6 +175,7 @@ fn apply(st: &mut IndexState, log: &Log) -> Result<()> {
                 index: e.index,
                 spend_commitment: e.spendCommitment,
                 ciphertext: e.ciphertext,
+                lot: None,
             });
         }
         IDarkVault::BatchSettled::SIGNATURE_HASH => {
@@ -175,6 +192,7 @@ fn apply(st: &mut IndexState, log: &Log) -> Result<()> {
                     capsule: Bytes::new(),
                     sealed_summary: Bytes::new(),
                     results: vec![],
+                    lots: vec![],
                 },
             );
         }
@@ -188,6 +206,26 @@ fn apply(st: &mut IndexState, log: &Log) -> Result<()> {
             b.capsule = e.capsule;
             b.sealed_summary = e.sealedSummary;
             b.results = e.results;
+        }
+        // Aynı işlemde OrderSubmitted'dan hemen sonra gelir: son eklenen emri işaretler.
+        IDarkVault::LotSellSubmitted::SIGNATURE_HASH => {
+            let e = log.log_decode::<IDarkVault::LotSellSubmitted>()?.inner.data;
+            let rec = st
+                .windows
+                .values_mut()
+                .rev()
+                .flat_map(|w| w.orders.iter_mut().rev())
+                .find(|o| o.order_id == e.orderId)
+                .ok_or_else(|| anyhow!("LotSellSubmitted before OrderSubmitted for {}", e.orderId))?;
+            rec.lot = Some(e.lot);
+        }
+        IDarkVault::BatchLots::SIGNATURE_HASH => {
+            let e = log.log_decode::<IDarkVault::BatchLots>()?.inner.data;
+            let b = st
+                .batches
+                .get_mut(&e.batchId)
+                .ok_or_else(|| anyhow!("BatchLots before BatchSettled for {}", e.batchId))?;
+            b.lots = e.lots;
         }
         _ => {}
     }
