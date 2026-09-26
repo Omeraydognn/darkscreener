@@ -41,6 +41,18 @@ declare module "darkpool-sdk/order.mjs" {
     orderId: string,
     sealedResult: Uint8Array,
   ): Promise<{ poolId: number; outToken: string; amountOut: bigint; blinding: bigint; owner: bigint }>;
+  export function encryptLotSell(
+    enclavePub: Uint8Array,
+    chainId: number,
+    vault: string,
+    lotSell: { poolId: number; pctBps: number; lotOrderId: string; auth: bigint },
+  ): Promise<Uint8Array>;
+  export function openRemainder(
+    kb: Uint8Array,
+    eciesSecret: Uint8Array,
+    sellOrderId: string,
+    sealedRemainder: Uint8Array,
+  ): Promise<{ poolId: number; outToken: string; amountOut: bigint; blinding: bigint; owner: bigint }>;
 }
 
 declare module "darkpool-sdk/relayer.mjs" {

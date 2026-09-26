@@ -5,7 +5,18 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { hexToBytes, keccak256 } from "viem";
 import { encrypt, decrypt, secp256k1 } from "../src/ecies.mjs";
-import { encodeOrder, openResult, orderContext, CIPHERTEXT_LEN, Side } from "../src/order.mjs";
+import {
+  encodeOrder,
+  encodeLotSell,
+  openResult,
+  orderContext,
+  remainderId,
+  splitSealedResult,
+  CIPHERTEXT_LEN,
+  LOT_MEMO_LEN,
+  SEALED_RESULT_LEN,
+  Side,
+} from "../src/order.mjs";
 
 const fx = JSON.parse(readFileSync(new URL("../../contracts/test/fixtures/e2e.json", import.meta.url), "utf8"));
 
@@ -51,4 +62,26 @@ test("ECIES tur dönüşü, AAD bağlama ve sabit emir boyutu", async () => {
   assert.deepEqual(await decrypt(sk, ct, new Uint8Array([1, 2])), order);
   await assert.rejects(decrypt(sk, ct, new Uint8Array([9])));
   assert.equal(keccak256(ct).length, 66);
+});
+
+test("kilitli lot satışı kodlaması ve kalan lot kimliği Rust ile aynı (tee-core order.rs testleri)", () => {
+  const b = encodeLotSell({ poolId: 4, pctBps: 5000, lotOrderId: "0x" + "09".repeat(32), auth: 0x1234n });
+  assert.equal(b.length, 128);
+  const hex = Buffer.from(b).toString("hex");
+  assert.equal(hex.slice(0, 16), "0301000000041388");
+  assert.equal(hex.slice(16, 80), "09".repeat(32));
+  assert.equal(BigInt("0x" + hex.slice(80, 144)), 0x1234n);
+  assert.match(hex.slice(144), /^0+$/);
+  assert.throws(() => encodeLotSell({ poolId: 1, pctBps: 0, lotOrderId: "0x" + "00".repeat(32), auth: 1n }));
+  assert.throws(() => encodeLotSell({ poolId: 1, pctBps: 10_001, lotOrderId: "0x" + "00".repeat(32), auth: 1n }));
+  assert.equal(remainderId("0x" + "11".repeat(32)), "0x47a0bba39e1cbf3d332c03045d37310cca74ba32774eda150ec779fcace59649");
+});
+
+test("dolu sonuçlar enclave lot notu taşır; açarken ayıklanır", () => {
+  for (const r of fx.batch2.results) {
+    if (r.status !== 1) continue;
+    const { result, lotMemo } = splitSealedResult(hexToBytes(r.sealedResult));
+    assert.equal(result.length, SEALED_RESULT_LEN);
+    assert.equal(lotMemo.length, LOT_MEMO_LEN);
+  }
 });
