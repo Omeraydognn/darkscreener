@@ -129,6 +129,88 @@ impl OrderOutcome {
     }
 }
 
+// ---------------------------------------------------------------- lot notu (yalnızca enclave)
+
+/// Kilidi açılmamış bir alımın ("lot") enclave'e özel kaydı. Kullanıcı lotun miktarını 7 gün
+/// bilmez ama yüzdeyle satabilir: satış emrini işleyen enclave miktarı buradan okur.
+/// `sealed_result`'ın SONUNA eklenir; anahtarı enclave'in gizli anahtarından türediği için
+/// kilit açıldıktan sonra da (dış katman soyulunca bile) yalnızca enclave okuyabilir.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LotMemo {
+    pub pool_id: u32,
+    /// Lottaki base token miktarı
+    pub amount: u128,
+    /// Çıktı notlarının sahibi
+    pub owner: Field,
+    /// keccak256(alım emrindeki spend_blinding): satışta kullanıcı açılışı verir
+    pub auth_hash: [u8; 32],
+    /// Sonuçların şifreleneceği kullanıcı anahtarı
+    pub recipient: k256::PublicKey,
+}
+
+pub const LOT_MEMO_PLAIN_LEN: usize = 4 + 16 + 32 + 32 + 33;
+pub const LOT_MEMO_LEN: usize = 12 + LOT_MEMO_PLAIN_LEN + 16;
+
+impl LotMemo {
+    fn encode(&self) -> [u8; LOT_MEMO_PLAIN_LEN] {
+        let mut out = [0u8; LOT_MEMO_PLAIN_LEN];
+        out[0..4].copy_from_slice(&self.pool_id.to_be_bytes());
+        out[4..20].copy_from_slice(&self.amount.to_be_bytes());
+        out[20..52].copy_from_slice(&self.owner);
+        out[52..84].copy_from_slice(&self.auth_hash);
+        out[84..117].copy_from_slice(&crate::keys::compressed(&self.recipient));
+        out
+    }
+
+    fn decode(b: &[u8]) -> Result<Self, Error> {
+        if b.len() != LOT_MEMO_PLAIN_LEN {
+            return Err(Error::MalformedCiphertext);
+        }
+        Ok(Self {
+            pool_id: u32::from_be_bytes(b[0..4].try_into().unwrap()),
+            amount: u128::from_be_bytes(b[4..20].try_into().unwrap()),
+            owner: b[20..52].try_into().unwrap(),
+            auth_hash: b[52..84].try_into().unwrap(),
+            recipient: k256::PublicKey::from_sec1_bytes(&b[84..117]).map_err(|_| Error::MalformedCiphertext)?,
+        })
+    }
+}
+
+pub(crate) fn lot_memo_key(key: &crate::keys::EnclaveKey) -> Zeroizing<[u8; 32]> {
+    let secret = key.secret_bytes();
+    let hk = Hkdf::<Sha256>::new(None, secret.as_ref());
+    let mut okm = Zeroizing::new([0u8; 32]);
+    hk.expand(b"darkpool/lot-memo/v1", okm.as_mut()).expect("valid length");
+    okm
+}
+
+/// AAD = lotun emir kimliği: bir lotun notu başka bir lot için kullanılamaz.
+pub(crate) fn seal_lot_memo(key: &crate::keys::EnclaveKey, lot_order_id: &[u8; 32], memo: &LotMemo) -> Result<Vec<u8>, Error> {
+    aead_seal(&lot_memo_key(key), &memo.encode(), lot_order_id)
+}
+
+pub(crate) fn open_lot_memo(key: &crate::keys::EnclaveKey, lot_order_id: &[u8; 32], sealed: &[u8]) -> Result<LotMemo, Error> {
+    LotMemo::decode(&aead_open(&lot_memo_key(key), sealed, lot_order_id)?)
+}
+
+/// `sealed_result` = sonuç (SEALED_RESULT_LEN) [+ lot notu (LOT_MEMO_LEN)]. Lot notu varsa döner.
+pub fn split_sealed_result(sealed: &[u8]) -> (&[u8], Option<&[u8]>) {
+    if sealed.len() == SEALED_RESULT_LEN + LOT_MEMO_LEN {
+        (&sealed[..SEALED_RESULT_LEN], Some(&sealed[SEALED_RESULT_LEN..]))
+    } else {
+        (sealed, None)
+    }
+}
+
+/// Lot satışında satılmayan kısım (kalan lot) için ayrı sonuç kimliği:
+/// `keccak256("darkpool/remainder/v1" || satışEmriId)`.
+pub fn remainder_id(sell_order_id: &[u8; 32]) -> [u8; 32] {
+    let mut h = Keccak256::new();
+    h.update(b"darkpool/remainder/v1");
+    h.update(sell_order_id);
+    h.finalize().into()
+}
+
 /// Enclave tarafı: iç katman kullanıcıya, dış katman batch kilidine.
 pub(crate) fn seal_outcome(
     k_b: &[u8; 32],
@@ -142,7 +224,7 @@ pub(crate) fn seal_outcome(
 
 /// Kilit açıldıktan sonra herkes: dış katmanı soyar, kullanıcıya özel ECIES blob'unu döner.
 pub fn open_result_outer(k_b: &[u8; 32], order_id: &[u8; 32], sealed_result: &[u8]) -> Result<Vec<u8>, Error> {
-    aead_open(&result_key(k_b), sealed_result, order_id)
+    aead_open(&result_key(k_b), split_sealed_result(sealed_result).0, order_id)
 }
 
 /// Emir sahibi: kendi anahtarıyla iç katmanı çözer.

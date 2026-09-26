@@ -9,6 +9,7 @@ import { fmtUsd } from "@/lib/format";
 import { useStoredString } from "../usePoll";
 import { useApp } from "./AppProvider";
 import { FundsModal } from "./FundsModal";
+import { useLang } from "./LangProvider";
 
 const NAV = [
   { href: "/", label: "Keşfet", icon: Compass },
@@ -38,6 +39,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const activePool = path.startsWith("/token/") ? Number(path.split("/")[2]) : undefined;
   const poolName = pools?.find((p) => p.poolId === activePool)?.project?.name;
   const [a, b] = crumb(path, poolName);
+  const { lang, setLang } = useLang();
 
   return (
     <div className="terminal-shell">
@@ -49,6 +51,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
             <button type="button" className="theme-toggle" onClick={toggleTheme} aria-label={dark ? "Açık temaya geç" : "Koyu temaya geç"} title={dark ? "Açık tema" : "Koyu tema"}>
               {dark ? <Sun size={16} /> : <Moon size={16} />}
             </button>
+            <button type="button" className="theme-toggle" onClick={() => setLang(lang === "en" ? "tr" : "en")} aria-label="Language / Dil" title="Language / Dil"><strong className="text-xs">{lang === "en" ? "EN" : "TR"}</strong></button>
             <span className="network-label"><span className={`status-dot ${infoError ? "offline" : ""}`} />{config.chainName}</span>
             {wallet ? (
               <div className="cash-pill">

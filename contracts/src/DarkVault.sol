@@ -53,6 +53,9 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
     /// @notice Enclave saati ile blok zamanı arasındaki fark + settlement gecikmesi için pay.
     uint256 public constant MAX_EXTRA_LOCK = 1 days;
     uint256 public constant ESCAPE_DELAY = 2 days;
+    uint8 internal constant LOT_FREE = 0;
+    uint8 internal constant LOT_PENDING = 1;
+    uint8 internal constant LOT_CONSUMED = 2;
     uint256 public constant MAX_FEE_BPS = 100;
 
     // ------------------------------------------------------------------ değişmezler
@@ -81,6 +84,7 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
         uint32[] poolIds;
         uint64 next; // emir/havuz içeren bir sonraki pencere
         bool linked;
+        uint32 lotSellCount; // bu penceredeki kilitli lot satışları
     }
 
     struct Pool {
@@ -124,6 +128,20 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
         bytes sealedResult;
     }
 
+    /// @notice Kilitli lot satışının sonucu (enclave imzalı, batch.rs `LotUpdate`).
+    struct LotUpdate {
+        bytes32 sellOrderId;
+        bool filled;
+        bytes32 remainderCommitment;
+        bytes sealedRemainder;
+    }
+
+    struct LotSell {
+        bytes32 lot; // satılan alım (ya da önceki lot satışı) emri
+        uint64 window;
+        bool settled;
+    }
+
     /// @notice spend.circom kanıtı ve açık girdileri (ctxHash çağrıdan türetilir).
     struct SpendProof {
         uint256[2] a;
@@ -144,6 +162,12 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
     mapping(address => uint128) public minDeposit; // 0 = izin verilmeyen token
     /// @notice İzinsiz proje açılışını yapan launchpad kontratı (0 = kapalı).
     address public launchpad;
+    /// @notice Kilitli lotlar: kilidi açılmamış (claim edilmemiş) bir alımın sonucu, miktarı bilinmeden
+    ///         yüzdeyle satılabilir. 0 = serbest, 1 = satış bekliyor, 2 = satıldı (eski claim'i ağaca not eklemez).
+    mapping(bytes32 => uint8) public lotState;
+    mapping(bytes32 => LotSell) public lotSells;
+    /// @notice Lot satışında satılmayan kısmın notu; satış emrinin claim'iyle ağaca girer.
+    mapping(bytes32 => uint256) public remainders;
     mapping(uint64 => Batch) public batches; // settlement sırası -> batch
     mapping(uint32 => Reserves) public finalReserves; // yalnızca kaçış modunda doldurulur
     bool public finalReservesRevealed;
@@ -184,6 +208,8 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
     event FinalReservesRevealed(uint64 indexed batchId, uint256 poolCount);
     event LiquidityWithdrawn(uint32 indexed poolId, address indexed to, uint128 base, uint128 quote);
     event MinDepositSet(address indexed token, uint128 amount);
+    event LotSellSubmitted(bytes32 indexed orderId, bytes32 indexed lot);
+    event BatchLots(uint64 indexed batchId, LotUpdate[] lots);
     event LaunchpadSet(address indexed launchpad);
 
     // ------------------------------------------------------------------ hatalar
@@ -215,6 +241,8 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
     error AlreadySettled();
     error NotOwner();
     error InvalidReveal();
+    error LotUnavailable();
+    error LotMismatch();
     error NotRevealed();
 
     constructor(
@@ -418,6 +446,37 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
         emit OrderSubmitted(window, orderId, uint8(shard), uint32(index), p.spendCommitment, ciphertext);
     }
 
+    /// @notice Kilidi açılmamış bir alımı ("lot") miktarını bilmeden yüzdeyle sat. Ciphertext yüzdeyi ve
+    ///         sahiplik açılışını taşır; miktarı yalnızca enclave, lotun sonucundaki enclave notundan okur.
+    ///         Lot, satış settle edilene kadar kilitlenir (aynı lot iki kez satılamaz, claim edilemez).
+    function submitLotSell(bytes calldata ciphertext, bytes32 lot) external live nonReentrant returns (bytes32 orderId) {
+        if (ciphertext.length != CIPHERTEXT_LEN || ciphertext[0] != 0x01) revert BadCiphertext();
+        orderId = keccak256(ciphertext);
+        if (orders[orderId].window != 0) revert DuplicateOrder();
+        Order storage l = orders[lot];
+        // Lot, settle edilmiş ve henüz claim edilmemiş bir emrin sonucu olmalı.
+        if (l.window == 0 || l.window > lastSettledWindow || l.done || lotState[lot] != LOT_FREE) {
+            revert LotUnavailable();
+        }
+        lotState[lot] = LOT_PENDING;
+
+        uint64 window = currentWindow();
+        uint256 shard = uint256(orderId) % SHARDS;
+        Window storage w = _link(window);
+        uint256 index = w.counts[shard];
+        if (index >= MAX_ORDERS_PER_SHARD) revert ShardFull();
+        // Emir zincirinde "spendCommitment" alanı lot kimliğini taşır: enclave'in gördüğü lot bağlıdır.
+        w.chains[shard] = DarkPoolLib.orderChainStep(w.chains[shard], orderId, uint256(lot));
+        w.counts[shard] = index + 1;
+        w.lotSellCount += 1;
+        orders[orderId] = Order({window: window, done: false, spendCommitment: uint256(lot)});
+        lotSells[orderId] = LotSell({lot: lot, window: window, settled: false});
+
+        // forge-lint: disable-next-line(unsafe-typecast) shard < 16, index < 16
+        emit OrderSubmitted(window, orderId, uint8(shard), uint32(index), uint256(lot), ciphertext);
+        emit LotSellSubmitted(orderId, lot);
+    }
+
     /// @notice Notu (bir kısmını) cüzdana çek. Token ve miktar yalnızca bu çıkış anında görünür.
     /// @dev Kanıt `recipient`'a bağlıdır; açılış (token, amount, spendBlinding) spendCommitment'ı vermelidir.
     function withdraw(SpendProof calldata p, address token, uint128 amount, uint256 spendBlinding, address recipient)
@@ -444,15 +503,28 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
         Order storage o = _openOrder(orderId, b.window);
         bytes32 leaf = DarkPoolLib.resultLeaf(orderId, DarkPoolLib.STATUS_FILLED, bytes32(commitment), sealedResultHash);
         if (!MerkleProof.verifyCalldata(proof, b.resultsRoot, leaf)) revert InvalidProof();
+        uint8 ls = lotState[orderId];
+        if (ls == LOT_PENDING) revert LotUnavailable();
 
         o.done = true;
-        _insert(commitment);
+        bool consumed = ls == LOT_CONSUMED;
+        if (lotSells[orderId].window != 0) {
+            // Lot satışı: gelir notu her zaman; kalan lot, sonradan satılmadıysa.
+            _insert(commitment);
+            uint256 rest = remainders[orderId];
+            if (!consumed && rest != 0) _insert(rest);
+        } else if (!consumed) {
+            // Satılmış bir alımın notu ağaca girmez (karşılığı satış emrinin notlarıdır).
+            _insert(commitment);
+        }
         emit NoteClaimed(orderId, commitment);
     }
 
     /// @notice Enclave emri çözemediyse/fonlamayı doğrulayamadıysa: harcanan kısım (spendCommitment,
     ///         kullanıcıya ait bir not biçiminde) hemen ağaca geri döner. Açılış gerekmez.
     function returnRefunded(uint64 batchId, bytes32 orderId, bytes32[] calldata proof) external nonReentrant {
+        // Lot satışı not harcamaz: reddedilince lot settlement'ta serbest kalır, iade edilecek not yok.
+        if (lotSells[orderId].window != 0) revert LotMismatch();
         Batch storage b = batches[batchId];
         Order storage o = _openOrder(orderId, b.window);
         bytes32 leaf = DarkPoolLib.resultLeaf(orderId, DarkPoolLib.STATUS_REFUNDED, bytes32(0), keccak256(""));
@@ -466,12 +538,16 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
     // ------------------------------------------------------------------ settlement
 
     /// @notice Enclave'in imzaladığı batch sonucunu uygular. Herkes çağırabilir (relayer'a özel yetki yok).
-    function settleBatch(SettleParams calldata p, Result[] calldata results) external live nonReentrant {
+    function settleBatch(SettleParams calldata p, Result[] calldata results, LotUpdate[] calldata lots)
+        external
+        live
+        nonReentrant
+    {
         uint64 unlockTime = _checkTiming(p.window, p.unlockRound);
         bytes32 resultsRoot = _checkResults(p.window, results);
         uint64 batchId = settledCount + 1;
         bytes32 newStateHash = keccak256(p.newSealedState);
-        _checkSignature(p, batchId, newStateHash, resultsRoot);
+        _checkSignature(p, batchId, newStateHash, resultsRoot, _applyLots(p.window, lots));
 
         batches[batchId] = Batch({
             resultsRoot: resultsRoot, window: p.window, unlockTime: unlockTime, reservesCommitment: p.reservesCommitment
@@ -482,6 +558,7 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
 
         emit BatchSettled(batchId, p.window, resultsRoot, p.unlockRound, unlockTime);
         emit BatchData(batchId, p.newSealedState, p.capsule, p.sealedSummary, results);
+        if (lots.length != 0) emit BatchLots(batchId, lots);
     }
 
     // ------------------------------------------------------------------ kaçış kapağı
@@ -505,6 +582,13 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
         if (o.window <= lastSettledWindow) revert AlreadySettled();
 
         o.done = true;
+        LotSell storage sale = lotSells[orderId];
+        if (sale.window != 0) {
+            // Settle edilmemiş lot satışı: lot serbest kalır (sahibi kilit açılınca claim eder).
+            lotState[sale.lot] = LOT_FREE;
+            emit OrderReturned(orderId, 0);
+            return;
+        }
         _insert(o.spendCommitment);
         emit OrderReturned(orderId, o.spendCommitment);
     }
@@ -634,10 +718,34 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
 
     /// @dev Girdiyi (emir zincirleri, havuz açılışları, fee, quote token) kontratın KENDİ
     ///      kayıtlarından koyar: relayer enclave'e yalan söylediyse imza tutmaz.
-    function _checkSignature(SettleParams calldata p, uint64 batchId, bytes32 newStateHash, bytes32 resultsRoot)
-        internal
-        view
-    {
+    /// @dev Penceredeki HER lot satışı için tam olarak bir güncelleme (enclave imzalı, lotsHash ile).
+    ///      Gerçekleşen satış lotu tüketir; gerçekleşmeyen lotu serbest bırakır.
+    function _applyLots(uint64 window, LotUpdate[] calldata lots) internal returns (bytes32 chain) {
+        if (lots.length != windows[window].lotSellCount) revert LotMismatch();
+        for (uint256 i = 0; i < lots.length; ++i) {
+            LotUpdate calldata u = lots[i];
+            LotSell storage sale = lotSells[u.sellOrderId];
+            if (sale.window != window || sale.settled) revert LotMismatch();
+            sale.settled = true;
+            if (u.filled) {
+                lotState[sale.lot] = LOT_CONSUMED;
+                if (u.remainderCommitment != bytes32(0)) remainders[u.sellOrderId] = uint256(u.remainderCommitment);
+            } else {
+                lotState[sale.lot] = LOT_FREE;
+            }
+            chain = DarkPoolLib.lotChainStep(
+                chain, u.sellOrderId, u.filled, u.remainderCommitment, keccak256(u.sealedRemainder)
+            );
+        }
+    }
+
+    function _checkSignature(
+        SettleParams calldata p,
+        uint64 batchId,
+        bytes32 newStateHash,
+        bytes32 resultsRoot,
+        bytes32 lotsHash
+    ) internal view {
         Window storage w = windows[p.window];
         bytes32 digest = DarkPoolLib.settlementDigest(
             DarkPoolLib.Settlement({
@@ -654,7 +762,8 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
                 feeBps: feeBps,
                 ordersHash: keccak256(abi.encodePacked(w.chains)),
                 poolsHash: w.poolsChain,
-                reservesCommitment: p.reservesCommitment
+                reservesCommitment: p.reservesCommitment,
+                lotsHash: lotsHash
             })
         );
         if (!registry.isEnclave(ECDSA.recover(digest, p.signature))) revert InvalidSigner();

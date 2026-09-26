@@ -30,8 +30,8 @@ use crate::{
     digest::Settlement,
     keys::EnclaveKey,
     note::{random_field, spend_commitment, Field},
-    order::{order_aad, order_id, Order},
-    reveal::{self, BatchSummary, OrderOutcome, PoolSummary},
+    order::{decode_plain, order_aad, order_id, Order, Plain},
+    reveal::{self, BatchSummary, LotMemo, OrderOutcome, PoolSummary},
     state::{self, Pool, VaultState},
     timelock, Error,
 };
@@ -59,7 +59,44 @@ pub const UNLOCK_MARGIN_SECONDS: u64 = 15 * 60;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncryptedOrder {
     pub ciphertext: Vec<u8>,
+    /// Lot satışında: satılan lotun emir kimliği (kontrat bu alana yazar).
     pub spend_commitment: Field,
+    /// Kontratta `submitLotSell` ile gelen emir. Relayer zincirdeki olaydan doldurur; yalan
+    /// söylerse kontrat `lots` listesini kabul etmez (her lot satışına bir güncelleme şart).
+    pub is_lot_sell: bool,
+    /// Lot satışında: satılan lotun sonucuna eklenmiş enclave notu (zincirdeki BatchData'dan).
+    pub lot_memo: Option<Vec<u8>>,
+}
+
+impl EncryptedOrder {
+    pub fn new(ciphertext: Vec<u8>, spend_commitment: Field) -> Self {
+        Self { ciphertext, spend_commitment, is_lot_sell: false, lot_memo: None }
+    }
+}
+
+/// Bir lot satışının sonucu (kontrat bunu lotun durumuna uygular).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LotUpdate {
+    pub sell_order_id: [u8; 32],
+    /// true: lot tüketildi (satış gerçekleşti); false: lot olduğu gibi kaldı
+    pub filled: bool,
+    /// Satılmayan kısmın yeni notu (yoksa sıfır); satış emrinin claim'iyle ağaca girer
+    pub remainder_commitment: [u8; 32],
+    /// Kalan notun açılışı (sonuçlarla aynı iki katman; kimlik = `remainder_id`)
+    pub sealed_remainder: Vec<u8>,
+}
+
+/// `chain = keccak256(abi.encodePacked(chain, sellOrderId, uint8 filled, remainderCommitment, keccak256(sealedRemainder)))`
+pub fn lots_hash(lots: &[LotUpdate]) -> [u8; 32] {
+    lots.iter().fold([0u8; 32], |chain, l| {
+        let mut h = Keccak256::new();
+        h.update(chain);
+        h.update(l.sell_order_id);
+        h.update([l.filled as u8]);
+        h.update(l.remainder_commitment);
+        h.update(Keccak256::digest(&l.sealed_remainder));
+        h.finalize().into()
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,6 +254,8 @@ pub struct BatchOutput {
     /// drand'e kilitli `K_b`
     pub capsule: Vec<u8>,
     pub sealed_summary: Vec<u8>,
+    /// Girişteki lot satışlarıyla aynı sırada (her biri için bir kayıt)
+    pub lots: Vec<LotUpdate>,
 }
 
 struct Accepted {
@@ -224,9 +263,14 @@ struct Accepted {
     order: Order,
     base_token: [u8; 20],
     in_token: [u8; 20],
+    /// Lot satışı: (lottaki toplam miktar, lot notu)
+    lot: Option<(u128, LotMemo)>,
+    /// Alım: sonuca eklenecek lot notu için keccak(spend_blinding)
+    auth_hash: [u8; 32],
 }
 
-/// Yeni bir not üretir, sonucu `results[index]`'e yazar.
+/// Yeni bir not üretir, sonucu `results[index]`'e yazar. `memo` verilirse (sonuç, satılabilir
+/// bir lot içeriyorsa) enclave notu sonucun sonuna eklenir.
 fn issue_note(
     k_b: &[u8; 32],
     result: &mut OrderResult,
@@ -234,12 +278,22 @@ fn issue_note(
     pool_id: u32,
     out_token: [u8; 20],
     amount_out: u128,
+    key: &EnclaveKey,
+    memo: Option<LotMemo>,
 ) -> Result<(), Error> {
     let outcome = OrderOutcome { pool_id, out_token, amount_out, blinding: random_field(), owner: order.owner };
     result.status = OrderStatus::Filled;
     result.output_commitment = outcome.commitment()?;
     result.sealed_result = reveal::seal_outcome(k_b, &result.order_id, &order.recipient, &outcome)?;
+    // Her dolu sonuç aynı uzunlukta olsun diye lot notu HER ZAMAN eklenir (alım mı satım mı
+    // uzunluktan anlaşılmasın); satılabilir lot yoksa miktarı sıfırdır ve satışta reddedilir.
+    let memo = memo.unwrap_or(LotMemo { pool_id, amount: 0, owner: order.owner, auth_hash: random_field(), recipient: order.recipient });
+    result.sealed_result.extend(reveal::seal_lot_memo(key, &result.order_id, &memo)?);
     Ok(())
+}
+
+fn keccak(b: &[u8]) -> [u8; 32] {
+    Keccak256::digest(b).into()
 }
 
 /// `now_unix`, TEE wrapper'ının güvenilir saatidir. Kilit turu girdiden ALINMAZ:
@@ -308,30 +362,70 @@ pub fn process_batch_locked_to(
         })
         .collect();
 
+    let mut seen_lots = HashSet::new();
     for (index, enc) in input.orders.iter().enumerate() {
         if !seen.insert(results[index].order_id) {
             continue;
         }
         let Ok(plain) = key.decrypt(&enc.ciphertext, &aad) else { continue };
         let plain = Zeroizing::new(plain);
-        let Ok(order) = Order::decode(&plain) else { continue };
-        let Some(pool) = vault.pool(order.pool_id) else { continue };
-        let in_token = match order.side {
-            Side::Buy => ctx.quote_token,
-            Side::Sell => pool.base_token,
-        };
-        // Fonlama: kullanıcının harcadığı not parçası tam olarak bu token ve miktar olmalı.
-        match spend_commitment(&in_token, order.amount_in, &order.spend_blinding) {
-            Ok(c) if c == enc.spend_commitment => {}
+        match decode_plain(&plain) {
+            Ok(Plain::Order(order)) if !enc.is_lot_sell => {
+                let Some(pool) = vault.pool(order.pool_id) else { continue };
+                let in_token = match order.side {
+                    Side::Buy => ctx.quote_token,
+                    Side::Sell => pool.base_token,
+                };
+                // Fonlama: kullanıcının harcadığı not parçası tam olarak bu token ve miktar olmalı.
+                match spend_commitment(&in_token, order.amount_in, &order.spend_blinding) {
+                    Ok(c) if c == enc.spend_commitment => {}
+                    _ => continue,
+                }
+                let auth_hash = keccak(&order.spend_blinding);
+                accepted.push(Accepted { index, base_token: pool.base_token, in_token, order, lot: None, auth_hash });
+            }
+            // Kilitli lot satışı: miktarı enclave lot notundan okur; kullanıcı yalnızca yüzde verir.
+            Ok(Plain::LotSell(ls)) if enc.is_lot_sell => {
+                if enc.spend_commitment != ls.lot_order_id || !seen_lots.insert(ls.lot_order_id) {
+                    continue;
+                }
+                let Some(sealed) = enc.lot_memo.as_deref() else { continue };
+                let Ok(memo) = reveal::open_lot_memo(key, &ls.lot_order_id, sealed) else { continue };
+                if memo.pool_id != ls.pool_id || keccak(&ls.auth) != memo.auth_hash {
+                    continue;
+                }
+                let Some(pool) = vault.pool(ls.pool_id) else { continue };
+                let sell = memo.amount * u128::from(ls.pct_bps) / 10_000;
+                if sell == 0 {
+                    continue;
+                }
+                let order = Order {
+                    side: Side::Sell,
+                    pool_id: ls.pool_id,
+                    amount_in: sell,
+                    recipient: memo.recipient,
+                    spend_blinding: ls.auth,
+                    owner: memo.owner,
+                };
+                accepted.push(Accepted {
+                    index,
+                    base_token: pool.base_token,
+                    in_token: pool.base_token,
+                    order,
+                    auth_hash: memo.auth_hash,
+                    lot: Some((memo.amount, memo)),
+                });
+            }
             _ => continue,
         }
-        accepted.push(Accepted { index, base_token: pool.base_token, in_token, order });
     }
 
     // 4. havuz başına clearing (tüm havuzlar)
     let mut k_b = Zeroizing::new([0u8; 32]);
     OsRng.fill_bytes(k_b.as_mut());
     let mut summary = Vec::with_capacity(vault.pools.len());
+    // (sonuç indeksi, gerçekleşti mi, kalan miktar, emir, havuz, base token)
+    let mut lot_outcomes: Vec<(usize, bool, u128, Order, u32, [u8; 20])> = Vec::new();
 
     for pool in vault.pools.iter_mut() {
         let members: Vec<&Accepted> = accepted.iter().filter(|a| a.order.pool_id == pool.pool_id).collect();
@@ -354,6 +448,7 @@ pub fn process_batch_locked_to(
                 pool.reserves = cleared.new_reserves;
                 entry.price_x18 = cleared.price_x18();
                 for (a, amount_out) in members.iter().zip(&cleared.amounts_out) {
+                    let buy = a.order.side == Side::Buy;
                     let out_token = match a.order.side {
                         Side::Buy => {
                             entry.quote_in += a.order.amount_in;
@@ -366,20 +461,76 @@ pub fn process_batch_locked_to(
                             ctx.quote_token
                         }
                     };
-                    issue_note(&k_b, &mut results[a.index], &a.order, pool.pool_id, out_token, *amount_out)?;
+                    // Alım sonucu satılabilir bir lottur: enclave notu eklenir.
+                    let memo = buy.then(|| LotMemo {
+                        pool_id: pool.pool_id,
+                        amount: *amount_out,
+                        owner: a.order.owner,
+                        auth_hash: a.auth_hash,
+                        recipient: a.order.recipient,
+                    });
+                    match &a.lot {
+                        None => issue_note(&k_b, &mut results[a.index], &a.order, pool.pool_id, out_token, *amount_out, key, memo)?,
+                        Some((total, lot)) => {
+                            let remainder = total - a.order.amount_in;
+                            let remainder_memo = LotMemo { amount: remainder, ..lot.clone() };
+                            issue_note(&k_b, &mut results[a.index], &a.order, pool.pool_id, out_token, *amount_out, key, Some(remainder_memo))?;
+                            lot_outcomes.push((a.index, true, remainder, a.order.clone(), pool.pool_id, a.base_token));
+                        }
+                    }
                 }
             }
             // Motor hata verirse (ör. taşma) havuz değişmez; emirler aynı token/miktarla
             // özel iade notu alır.
             Err(_) => {
                 for a in &members {
-                    issue_note(&k_b, &mut results[a.index], &a.order, pool.pool_id, a.in_token, a.order.amount_in)?;
+                    if a.lot.is_some() {
+                        // Lot satışı gerçekleşmedi: lot olduğu gibi kalır (kontrat kilidini çözer).
+                        lot_outcomes.push((a.index, false, 0, a.order.clone(), pool.pool_id, a.base_token));
+                        continue;
+                    }
+                    let memo = (a.order.side == Side::Buy).then(|| LotMemo {
+                        pool_id: pool.pool_id,
+                        amount: 0,
+                        owner: a.order.owner,
+                        auth_hash: a.auth_hash,
+                        recipient: a.order.recipient,
+                    });
+                    issue_note(&k_b, &mut results[a.index], &a.order, pool.pool_id, a.in_token, a.order.amount_in, key, memo)?;
                 }
             }
         }
         entry.base_reserve = pool.reserves.base;
         entry.quote_reserve = pool.reserves.quote;
         summary.push(entry);
+    }
+
+    // 4b. lot güncellemeleri: girişteki HER lot satışı için bir kayıt (geçersiz olanlar filled=false)
+    let mut lots = Vec::new();
+    for (index, enc) in input.orders.iter().enumerate() {
+        if !enc.is_lot_sell {
+            continue;
+        }
+        let sell_order_id = results[index].order_id;
+        let mut update =
+            LotUpdate { sell_order_id, filled: false, remainder_commitment: [0u8; 32], sealed_remainder: Vec::new() };
+        if let Some((_, filled, remainder, order, pool_id, base_token)) = lot_outcomes.iter().find(|o| o.0 == index) {
+            update.filled = *filled;
+            // Kalan not %100 satışta da (sıfır miktarla) üretilir: satılan oran dışarıdan anlaşılmasın.
+            if *filled {
+                let rid = reveal::remainder_id(&sell_order_id);
+                let outcome = OrderOutcome {
+                    pool_id: *pool_id,
+                    out_token: *base_token,
+                    amount_out: *remainder,
+                    blinding: random_field(),
+                    owner: order.owner,
+                };
+                update.remainder_commitment = outcome.commitment()?;
+                update.sealed_remainder = reveal::seal_outcome(&k_b, &rid, &order.recipient, &outcome)?;
+            }
+        }
+        lots.push(update);
     }
 
     // 5. özet + kapsül
@@ -412,10 +563,11 @@ pub fn process_batch_locked_to(
         orders_hash: orders_hash(&input.orders),
         pools_hash: pools_hash(&input.new_pools),
         reserves_commitment,
+        lots_hash: lots_hash(&lots),
     };
     let signature = key.sign_digest(&settlement.digest())?;
 
-    Ok(BatchOutput { settlement, signature, new_sealed_state, results, capsule, sealed_summary })
+    Ok(BatchOutput { settlement, signature, new_sealed_state, results, capsule, sealed_summary, lots })
 }
 
 #[cfg(test)]
@@ -460,10 +612,61 @@ mod tests {
             spend_blinding,
             owner: random_field(),
         };
-        EncryptedOrder {
-            ciphertext: ecies::encrypt(&enclave.public_key(), &o.encode(), &order_aad(10143, &VAULT)).unwrap(),
-            spend_commitment: spend_commitment(&funding.0, funding.1, &spend_blinding).unwrap(),
-        }
+        EncryptedOrder::new(
+            ecies::encrypt(&enclave.public_key(), &o.encode(), &order_aad(10143, &VAULT)).unwrap(),
+            spend_commitment(&funding.0, funding.1, &spend_blinding).unwrap(),
+        )
+    }
+
+    #[test]
+    fn locked_lot_can_be_sold_by_percentage_without_knowing_amount() {
+        let enclave = EnclaveKey::generate();
+        let user = SecretKey::random(&mut rand_core::OsRng);
+        let g = genesis(&enclave);
+
+        // batch 2: 1000 USDC'lik alım -> sonuç + enclave lot notu
+        let sb = random_field();
+        let buy = Order { side: Side::Buy, pool_id: 1, amount_in: 1_000 * 1_000_000, recipient: user.public_key(), spend_blinding: sb, owner: random_field() };
+        let enc = EncryptedOrder::new(
+            ecies::encrypt(&enclave.public_key(), &buy.encode(), &order_aad(10143, &VAULT)).unwrap(),
+            spend_commitment(&USDC, buy.amount_in, &sb).unwrap(),
+        );
+        let b2 = run(&enclave, &BatchInput { ctx: ctx(2), prev_sealed_state: Some(g.new_sealed_state), new_pools: vec![], orders: vec![enc] }).unwrap();
+        let lot_id = b2.results[0].order_id;
+        let (_, memo) = reveal::split_sealed_result(&b2.results[0].sealed_result);
+        let memo = memo.expect("alım sonucu lot notu taşır").to_vec();
+        let bought = reveal::open_lot_memo(&enclave, &lot_id, &memo).unwrap().amount;
+        assert!(bought > 0);
+
+        let lot_sell = |auth: Field, pct: u16| {
+            let ls = crate::order::LotSell { pool_id: 1, pct_bps: pct, lot_order_id: lot_id, auth };
+            EncryptedOrder {
+                ciphertext: ecies::encrypt(&enclave.public_key(), &ls.encode(), &order_aad(10143, &VAULT)).unwrap(),
+                spend_commitment: lot_id,
+                is_lot_sell: true,
+                lot_memo: Some(memo.clone()),
+            }
+        };
+
+        // Yanlış yetki: lot olduğu gibi kalır
+        let bad = run(&enclave, &BatchInput { ctx: ctx(3), prev_sealed_state: Some(b2.new_sealed_state.clone()), new_pools: vec![], orders: vec![lot_sell(random_field(), 5_000)] }).unwrap();
+        assert_eq!(bad.results[0].status, OrderStatus::Refunded);
+        assert_eq!(bad.lots.len(), 1);
+        assert!(!bad.lots[0].filled);
+
+        // %50: gelir notu (USDC) + kalan lot notu; kalan miktar = yarısı
+        let ok = run(&enclave, &BatchInput { ctx: ctx(3), prev_sealed_state: Some(b2.new_sealed_state), new_pools: vec![], orders: vec![lot_sell(sb, 5_000)] }).unwrap();
+        assert_eq!(ok.results[0].status, OrderStatus::Filled);
+        let l = &ok.lots[0];
+        assert!(l.filled && l.remainder_commitment != [0; 32] && !l.sealed_remainder.is_empty());
+        let sell_id = ok.results[0].order_id;
+        let (_, rmemo) = reveal::split_sealed_result(&ok.results[0].sealed_result);
+        let rest = reveal::open_lot_memo(&enclave, &sell_id, rmemo.expect("kalan lot da satılabilir")).unwrap();
+        assert_eq!(rest.amount, bought - bought / 2);
+        assert_eq!(ok.settlement.lots_hash, lots_hash(&ok.lots));
+
+        // Lot notu başka bir lot kimliğiyle açılamaz
+        assert!(reveal::open_lot_memo(&enclave, &sell_id, &memo).is_err());
     }
 
     fn genesis(enclave: &EnclaveKey) -> BatchOutput {
@@ -506,7 +709,7 @@ mod tests {
                 alice_o.clone(),
                 bob_o,
                 lying_o,
-                EncryptedOrder { ciphertext: vec![0xFF; crate::order::CIPHERTEXT_LEN], spend_commitment: [1; 32] },
+                EncryptedOrder::new(vec![0xFF; crate::order::CIPHERTEXT_LEN], [1; 32]),
                 alice_o,
             ],
         };
@@ -521,7 +724,7 @@ mod tests {
         let st: Vec<_> = out.results.iter().map(|r| r.status).collect();
         use OrderStatus::*;
         assert_eq!(st, vec![Filled, Filled, Refunded, Refunded, Refunded]);
-        assert!(out.results[0].sealed_result.len() == reveal::SEALED_RESULT_LEN);
+        assert!(out.results[0].sealed_result.len() == reveal::SEALED_RESULT_LEN + reveal::LOT_MEMO_LEN);
         assert_eq!(out.results[0].sealed_result.len(), out.results[1].sealed_result.len());
 
         // Kilit açılmadan: yanlış tur imzası kapsülü açamaz (burada kapsül 1000'e kilitli,
@@ -654,7 +857,7 @@ mod tests {
     #[test]
     fn too_many_orders_rejected() {
         let enclave = EnclaveKey::generate();
-        let order = EncryptedOrder { ciphertext: vec![0], spend_commitment: [0; 32] };
+        let order = EncryptedOrder::new(vec![0], [0; 32]);
         let input = BatchInput {
             ctx: ctx(1),
             prev_sealed_state: None,

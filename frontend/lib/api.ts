@@ -77,6 +77,8 @@ export type Info = {
   lockSeconds: number;
   finalizedTimestamp: number;
   launchpad?: `0x${string}` | null;
+  /** Proje açılışında en az likidite (dUSD birimi, 6 ondalık) */
+  launchMinQuote?: string | null;
   /** usdPerMon: 1 MON başına dUSD birimi (6 ondalık); balance: MON çekim likiditesi (wei) */
   gateway?: { address: `0x${string}`; usdPerMon: string; balance: string } | null;
 };

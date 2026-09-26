@@ -5,7 +5,7 @@
 //!     "darkpool/settle/v1", uint256(block.chainid), address(this),
 //!     uint256(batchId), prevStateHash, newStateHash, resultsRoot,
 //!     uint256(unlockRound), keccak256(capsule), keccak256(sealedSummary),
-//!     quoteToken, uint256(feeBps), ordersHash, poolsHash, reservesCommitment
+//!     quoteToken, uint256(feeBps), ordersHash, poolsHash, reservesCommitment, lotsHash
 //! ))
 //! ```
 //! `ordersHash` / `poolsHash` enclave'in gördüğü girdiyi bağlar: relayer yatırılan
@@ -36,6 +36,8 @@ pub struct Settlement {
     pub orders_hash: [u8; 32],
     pub pools_hash: [u8; 32],
     pub reserves_commitment: [u8; 32],
+    /// Lot satışlarının sonuçları (`batch::lots_hash`); lot satışı yoksa sıfır
+    pub lots_hash: [u8; 32],
 }
 
 fn u256_be(v: u64) -> [u8; 32] {
@@ -62,6 +64,7 @@ impl Settlement {
         h.update(self.orders_hash);
         h.update(self.pools_hash);
         h.update(self.reserves_commitment);
+        h.update(self.lots_hash);
         h.finalize().into()
     }
 }
@@ -89,6 +92,7 @@ mod tests {
             orders_hash: [6; 32],
             pools_hash: [7; 32],
             reserves_commitment: [8; 32],
+            lots_hash: [9; 32],
         };
         let d = s.digest();
         let sig = key.sign_digest(&d).unwrap();

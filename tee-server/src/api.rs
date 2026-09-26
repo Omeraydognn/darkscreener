@@ -3,7 +3,7 @@
 //! Çekirdek serde bilmez; dönüşümler burada.
 
 use dark_tee_core::{
-    batch::{BatchContext, BatchInput, BatchOutput, EncryptedOrder, OrderResult, OrderStatus, PoolInit},
+    batch::{BatchContext, BatchInput, BatchOutput, EncryptedOrder, LotUpdate, OrderResult, OrderStatus, PoolInit},
     digest::Settlement,
 };
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
@@ -101,8 +101,14 @@ pub struct PoolInitDto {
 #[serde(deny_unknown_fields)]
 pub struct OrderDto {
     pub ciphertext: Bytes,
-    /// Kontratın ZK kanıtıyla kaydettiği Poseidon3(token, amount, blinding)
+    /// Kontratın ZK kanıtıyla kaydettiği Poseidon3(token, amount, blinding); lot satışında lot kimliği
     pub spend_commitment: Fixed<32>,
+    /// Kontratta `submitLotSell` ile gelen kilitli lot satışı
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_lot_sell: bool,
+    /// Lot satışında satılan lotun enclave notu (lotun sealedResult sonu)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lot_memo: Option<Bytes>,
 }
 
 impl From<ProcessRequest> for BatchInput {
@@ -124,7 +130,12 @@ impl From<ProcessRequest> for BatchInput {
             orders: r
                 .orders
                 .into_iter()
-                .map(|o| EncryptedOrder { ciphertext: o.ciphertext.0, spend_commitment: o.spend_commitment.0 })
+                .map(|o| EncryptedOrder {
+                    ciphertext: o.ciphertext.0,
+                    spend_commitment: o.spend_commitment.0,
+                    is_lot_sell: o.is_lot_sell,
+                    lot_memo: o.lot_memo.map(|b| b.0),
+                })
                 .collect(),
         }
     }
@@ -146,6 +157,7 @@ pub struct SettlementDto {
     pub orders_hash: Fixed<32>,
     pub pools_hash: Fixed<32>,
     pub reserves_commitment: Fixed<32>,
+    pub lots_hash: Fixed<32>,
     /// Bilgi amaçlı; doğrulayan taraf alanlardan kendisi yeniden hesaplamalı.
     pub digest: Fixed<32>,
 }
@@ -167,6 +179,7 @@ impl From<&SettlementDto> for Settlement {
             orders_hash: s.orders_hash.0,
             pools_hash: s.pools_hash.0,
             reserves_commitment: s.reserves_commitment.0,
+            lots_hash: s.lots_hash.0,
         }
     }
 }
@@ -201,6 +214,25 @@ impl From<&ResultDto> for OrderResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LotUpdateDto {
+    pub sell_order_id: Fixed<32>,
+    pub filled: bool,
+    pub remainder_commitment: Fixed<32>,
+    pub sealed_remainder: Bytes,
+}
+
+impl From<&LotUpdateDto> for LotUpdate {
+    fn from(l: &LotUpdateDto) -> Self {
+        LotUpdate {
+            sell_order_id: l.sell_order_id.0,
+            filled: l.filled,
+            remainder_commitment: l.remainder_commitment.0,
+            sealed_remainder: l.sealed_remainder.0.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessResponse {
     pub settlement: SettlementDto,
     /// `r || s || v`, v ∈ {27, 28}
@@ -209,6 +241,8 @@ pub struct ProcessResponse {
     pub results: Vec<ResultDto>,
     pub capsule: Bytes,
     pub sealed_summary: Bytes,
+    #[serde(default)]
+    pub lots: Vec<LotUpdateDto>,
 }
 
 impl From<BatchOutput> for ProcessResponse {
@@ -230,6 +264,7 @@ impl From<BatchOutput> for ProcessResponse {
                 orders_hash: Fixed(s.orders_hash),
                 pools_hash: Fixed(s.pools_hash),
                 reserves_commitment: Fixed(s.reserves_commitment),
+                lots_hash: Fixed(s.lots_hash),
                 digest: Fixed(s.digest()),
             },
             signature: Fixed(o.signature),
@@ -249,6 +284,16 @@ impl From<BatchOutput> for ProcessResponse {
                 .collect(),
             capsule: Bytes(o.capsule),
             sealed_summary: Bytes(o.sealed_summary),
+            lots: o
+                .lots
+                .into_iter()
+                .map(|l| LotUpdateDto {
+                    sell_order_id: Fixed(l.sell_order_id),
+                    filled: l.filled,
+                    remainder_commitment: Fixed(l.remainder_commitment),
+                    sealed_remainder: Bytes(l.sealed_remainder),
+                })
+                .collect(),
         }
     }
 }

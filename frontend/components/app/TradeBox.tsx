@@ -92,8 +92,11 @@ export function TradeBox({ pool }: { pool: Pool | undefined }) {
             </div>
           </div>
           <div className="quick-amounts">
-            {[10, 50, 100].map((n) => <button type="button" key={n} onClick={() => setUsd(String(n))}>${n}</button>)}
-            <button type="button" onClick={() => setUsd((Number(cash) / 1e6).toFixed(2).replace(".", ","))}>Tümü</button>
+            {[25, 50, 75, 100].map((n) => (
+              <button type="button" key={n} disabled={cash === 0n} onClick={() => setUsd(((Number(cash) * n) / 100 / 1e6).toFixed(n === 100 ? 6 : 2).replace(/\.?0+$/, "").replace(".", ","))}>
+                {n === 100 ? "Tümü" : `%${n}`}
+              </button>
+            ))}
           </div>
           <div className="trade-details">
             <p><span>Nakit</span><strong className="num">{fmtUsd(cash)}</strong></p>

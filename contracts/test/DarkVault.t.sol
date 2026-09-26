@@ -70,6 +70,10 @@ contract DarkVaultTest is Test {
 
     // ================================================================ yardımcılar
 
+    function _noLots() internal pure returns (DarkVault.LotUpdate[] memory) {
+        return new DarkVault.LotUpdate[](0);
+    }
+
     function _deployToken(string memory key, string memory name, string memory sym, uint8 dec)
         internal
         returns (address a)
@@ -184,12 +188,12 @@ contract DarkVaultTest is Test {
 
     function _settle1() internal {
         vm.warp(GENESIS + 61);
-        vault.settleBatch(_params(".batch1", 1), _results(".batch1"));
+        vault.settleBatch(_params(".batch1", 1), _results(".batch1"), _noLots());
     }
 
     function _settle2() internal {
         vm.warp(GENESIS + 121);
-        vault.settleBatch(_params(".batch2", 2), _results(".batch2"));
+        vault.settleBatch(_params(".batch2", 2), _results(".batch2"), _noLots());
     }
 
     function _throughSettle2() internal {
@@ -405,7 +409,7 @@ contract DarkVaultTest is Test {
         DarkVault.Result[] memory rs = _results(".batch2");
         rs[3].status = 1; // iadeyi dolmuş gibi göster
         vm.expectRevert(DarkVault.InvalidSigner.selector);
-        vault.settleBatch(p, rs);
+        vault.settleBatch(p, rs, _noLots());
     }
 
     function test_settle_rejectsDroppedResult() public {
@@ -421,7 +425,7 @@ contract DarkVaultTest is Test {
         }
         DarkVault.SettleParams memory p = _params(".batch2", 2);
         vm.expectRevert(DarkVault.ResultCountMismatch.selector);
-        vault.settleBatch(p, rs);
+        vault.settleBatch(p, rs, _noLots());
     }
 
     /// @notice Zincirdeki emir kümesi enclave'in işlediğinden farklıysa imzalı sonuç reddedilir.
@@ -442,7 +446,7 @@ contract DarkVaultTest is Test {
             four[i] = full[i];
         }
         vm.expectRevert(DarkVault.InvalidSigner.selector);
-        vault.settleBatch(p, four);
+        vault.settleBatch(p, four, _noLots());
     }
 
     function test_settle_rejectsTamperedStateAndUnregisteredEnclave() public {
@@ -452,13 +456,13 @@ contract DarkVaultTest is Test {
         DarkVault.Result[] memory rs = _results(".batch1");
         p.newSealedState[20] ^= 0x01;
         vm.expectRevert(DarkVault.InvalidSigner.selector);
-        vault.settleBatch(p, rs);
+        vault.settleBatch(p, rs, _noLots());
 
         p = _params(".batch1", 1);
         vm.prank(owner);
         registry.revoke(enclave);
         vm.expectRevert(DarkVault.InvalidSigner.selector);
-        vault.settleBatch(p, rs);
+        vault.settleBatch(p, rs, _noLots());
     }
 
     function test_settle_timingRules() public {
@@ -467,21 +471,21 @@ contract DarkVaultTest is Test {
         DarkVault.Result[] memory rs = _results(".batch1");
         vm.warp(GENESIS + 59);
         vm.expectRevert(DarkVault.WindowOpen.selector);
-        vault.settleBatch(p, rs);
+        vault.settleBatch(p, rs, _noLots());
 
         vm.warp(UNLOCK - 7 days + 1);
         vm.expectRevert(DarkVault.UnlockTooEarly.selector);
-        vault.settleBatch(p, rs);
+        vault.settleBatch(p, rs, _noLots());
 
         vm.warp(GENESIS + 61);
         DarkVault.SettleParams memory p2 = _params(".batch2", 2);
         DarkVault.Result[] memory rs2 = _results(".batch2");
         vm.expectRevert(DarkVault.WrongWindow.selector);
-        vault.settleBatch(p2, rs2);
+        vault.settleBatch(p2, rs2, _noLots());
 
-        vault.settleBatch(p, rs);
+        vault.settleBatch(p, rs, _noLots());
         vm.expectRevert(DarkVault.WrongWindow.selector);
-        vault.settleBatch(p, rs);
+        vault.settleBatch(p, rs, _noLots());
     }
 
     // ================================================================ kaçış kapağı
@@ -508,7 +512,7 @@ contract DarkVaultTest is Test {
         DarkVault.SettleParams memory p = _params(".batch2", 2);
         DarkVault.Result[] memory rs = _results(".batch2");
         vm.expectRevert(DarkVault.Escaped.selector);
-        vault.settleBatch(p, rs);
+        vault.settleBatch(p, rs, _noLots());
         vm.expectRevert(DarkVault.Escaped.selector);
         vault.deposit(address(usdc), 1e6, 1);
         (bytes memory ct, DarkVault.SpendProof memory sp) = _order(0);
@@ -644,7 +648,7 @@ contract DarkVaultTest is Test {
         DarkVault.SettleParams memory p = _params(".batch2", 2);
         DarkVault.Result[] memory rs = _results(".batch2");
         g = gasleft();
-        vault.settleBatch(p, rs);
+        vault.settleBatch(p, rs, _noLots());
         console2.log("settleBatch (5 emir)", g - gasleft());
 
         _returnRefunded();

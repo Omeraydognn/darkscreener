@@ -89,6 +89,81 @@ impl Order {
     }
 }
 
+// ---------------------------------------------------------------- kilitli lot satışı (v3)
+
+/// Kilidi henüz açılmamış bir alımın ("lot") yüzdesel satışı. Kullanıcı lotun miktarını
+/// bilmez (7 gün kilitli); miktarı yalnızca enclave, alımda bıraktığı `LotMemo`'dan okur.
+///
+/// ```text
+/// 0 version = 3 | 1 side = 1 | 2..6 pool_id | 6..8 pct_bps (1..=10000)
+/// 8..40  lot_order_id   satılan alım emrinin kimliği (zincirde spendCommitment alanında)
+/// 40..72 auth           o alım emrindeki spend_blinding (yalnızca emir sahibi bilir)
+/// 72..128 sıfır padding
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LotSell {
+    pub pool_id: u32,
+    pub pct_bps: u16,
+    pub lot_order_id: [u8; 32],
+    pub auth: Field,
+}
+
+pub const LOT_SELL_VERSION: u8 = 3;
+
+impl LotSell {
+    pub fn encode(&self) -> [u8; ORDER_LEN] {
+        let mut out = [0u8; ORDER_LEN];
+        out[0] = LOT_SELL_VERSION;
+        out[1] = 1;
+        out[2..6].copy_from_slice(&self.pool_id.to_be_bytes());
+        out[6..8].copy_from_slice(&self.pct_bps.to_be_bytes());
+        out[8..40].copy_from_slice(&self.lot_order_id);
+        out[40..72].copy_from_slice(&self.auth);
+        out
+    }
+
+    pub fn decode(b: &[u8]) -> Result<Self, Error> {
+        if b.len() != ORDER_LEN || b[0] != LOT_SELL_VERSION {
+            return Err(Error::MalformedOrder("version"));
+        }
+        if b[1] != 1 {
+            return Err(Error::MalformedOrder("side"));
+        }
+        let pct_bps = u16::from_be_bytes(b[6..8].try_into().unwrap());
+        if pct_bps == 0 || pct_bps > 10_000 {
+            return Err(Error::MalformedOrder("pct"));
+        }
+        let auth: Field = b[40..72].try_into().unwrap();
+        if !is_canonical(&auth) {
+            return Err(Error::MalformedOrder("field"));
+        }
+        if b[72..].iter().any(|x| *x != 0) {
+            return Err(Error::MalformedOrder("padding"));
+        }
+        Ok(Self {
+            pool_id: u32::from_be_bytes(b[2..6].try_into().unwrap()),
+            pct_bps,
+            lot_order_id: b[8..40].try_into().unwrap(),
+            auth,
+        })
+    }
+}
+
+/// Şifre çözülmüş emir gövdesi: not harcayan normal emir ya da kilitli lot satışı.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Plain {
+    Order(Order),
+    LotSell(LotSell),
+}
+
+pub fn decode_plain(b: &[u8]) -> Result<Plain, Error> {
+    match b.first() {
+        Some(&ORDER_VERSION) => Order::decode(b).map(Plain::Order),
+        Some(&LOT_SELL_VERSION) => LotSell::decode(b).map(Plain::LotSell),
+        _ => Err(Error::MalformedOrder("version")),
+    }
+}
+
 /// Emir ciphertext'inin AAD'si: zincir + vault kontratı. Havuz (token) bilinçli olarak
 /// AAD'de YOK; o bilgi şifreli gövdenin içinde. Başka ağ/vault'a replay'i engeller.
 pub fn order_aad(chain_id: u64, vault: &[u8; 20]) -> Vec<u8> {
@@ -121,6 +196,20 @@ mod tests {
             spend_blinding: random_field(),
             owner: random_field(),
         }
+    }
+
+    #[test]
+    fn lot_sell_roundtrip_and_validation() {
+        let l = LotSell { pool_id: 4, pct_bps: 5_000, lot_order_id: [9; 32], auth: random_field() };
+        let b = l.encode();
+        assert_eq!(decode_plain(&b).unwrap(), Plain::LotSell(l.clone()));
+        let mut bad = b;
+        bad[6..8].copy_from_slice(&10_001u16.to_be_bytes());
+        assert_eq!(LotSell::decode(&bad), Err(Error::MalformedOrder("pct")));
+        let mut bad = b;
+        bad[100] = 1;
+        assert_eq!(LotSell::decode(&bad), Err(Error::MalformedOrder("padding")));
+        assert!(matches!(decode_plain(&sample().encode()).unwrap(), Plain::Order(_)));
     }
 
     #[test]

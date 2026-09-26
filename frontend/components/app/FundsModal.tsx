@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronDown, Copy, Loader2, X } from "lucide-react";
 import { config } from "@/lib/config";
-import { fmtMon, fmtUsd, relTime } from "@/lib/format";
+import { fmtMon, fmtRate, fmtUsd, relTime } from "@/lib/format";
 import { toRaw, USD_DECIMALS } from "@/lib/wallet";
 import { useApp, type FundsTab } from "./AppProvider";
 import { AccountSetup } from "./AccountSetup";
@@ -72,7 +72,7 @@ function Deposit() {
       </div>
       <p className="text-center text-muted">
         Bu adrese {config.chainName} üzerinden <strong className="text-fg">{symbol}</strong> gönder. Gelen {symbol}, gizli dolar bakiyene otomatik eklenir
-        {rate ? <> (demo kuru: <strong className="text-fg">1 {symbol} = {fmtUsd(rate)}</strong>)</> : null}.
+        {rate ? <> (kur: <strong className="text-fg">1 {symbol} = {fmtRate(rate)}</strong>, MON piyasa fiyatı)</> : null}.
       </p>
       <div className="qr-box" aria-label="Yatırma adresi QR kodu" role="img" dangerouslySetInnerHTML={{ __html: svg }} />
       <button type="button" className="address-box" onClick={copy} aria-label="Adresi kopyala">
@@ -88,7 +88,7 @@ function Deposit() {
         ) : sweep.last ? (
           <><Check size={15} className="text-buy" /> {fmtUsd(sweep.last.usd)} gizli bakiyene eklendi · {relTime(sweep.last.at / 1000)}</>
         ) : sweep.mon ? (
-          <span>{fmtMon(sweep.mon, symbol)} bekliyor: en az 1 $ ve işlem ücreti kadar {symbol} gerekiyor</span>
+          <span>{fmtMon(sweep.mon, symbol)} bekliyor: en az 0,01 $ ve işlem ücreti (~0,2 {symbol}) kadar {symbol} gerekiyor</span>
         ) : (
           <><Loader2 size={15} className="animate-spin text-muted" /> {symbol} bekleniyor…</>
         )}
@@ -155,7 +155,7 @@ function Withdraw() {
         <span>Tutar ($)</span>
         <div className="input-row">
           <input inputMode="decimal" autoComplete="off" placeholder="0,00" value={amount} onChange={(e) => setAmount(e.target.value)} />
-          <button type="button" onClick={() => setAmount((Number(cash) / 1e6).toFixed(2).replace(".", ","))}>Tümü</button>
+          <button type="button" onClick={() => setAmount((Number(cash) / 1e6).toFixed(6).replace(/\.?0+$/, "").replace(".", ","))}>Tümü</button>
         </div>
       </label>
       <label className="field">

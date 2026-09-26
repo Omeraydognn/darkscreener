@@ -23,7 +23,7 @@ pub struct PriceUpdater {
 
 impl PriceUpdater {
     pub fn new() -> Result<Self> {
-        Ok(Self { http: reqwest::Client::builder().timeout(Duration::from_secs(15)).build()?, last: None, last_price: None })
+        Ok(Self { http: reqwest::Client::builder().timeout(Duration::from_secs(15)).user_agent("darkscreener-relayer/0.2").build()?, last: None, last_price: None })
     }
 
     async fn fetch(&self) -> Result<f64> {

@@ -58,6 +58,8 @@ fn order(
     Ok(OrderDto {
         ciphertext: Bytes(ecies::encrypt(enclave_pk, &o.encode(), &order_aad(CHAIN_ID, &VAULT))?),
         spend_commitment: Fixed(spend_commitment(&funding.0, funding.1, &spend_blinding)?),
+        is_lot_sell: false,
+        lot_memo: None,
     })
 }
 
@@ -159,6 +161,8 @@ fn main() -> Result<()> {
         OrderDto {
             ciphertext: Bytes(vec![0xFF; dark_tee_core::order::CIPHERTEXT_LEN]),
             spend_commitment: Fixed([1; 32]),
+            is_lot_sell: false,
+            lot_memo: None,
         },
     ];
     let req2 = request(2, Some(&b1), vec![], orders);

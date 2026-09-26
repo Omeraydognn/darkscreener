@@ -184,7 +184,7 @@ fn main() -> Result<()> {
         new_pools: vec![],
         orders: spends
             .iter()
-            .map(|s| EncryptedOrder { ciphertext: s.ciphertext.clone(), spend_commitment: s.spend_commitment })
+            .map(|s| EncryptedOrder::new(s.ciphertext.clone(), s.spend_commitment))
             .collect(),
     };
     let b2 = process_batch_locked_to(&enclave, &FmAmm, &b2_input, UNLOCK_ROUND)?;

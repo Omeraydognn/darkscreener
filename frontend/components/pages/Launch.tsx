@@ -34,7 +34,7 @@ const empty: Form = {
   website: "", twitter: "", telegram: "", discord: "", github: "", whitepaper: "", supply: "10000000", liquidityPct: "20", mon: "",
 };
 
-function validate(f: Form, rate: bigint, monRaw: bigint, balance: bigint) {
+function validate(f: Form, rate: bigint, monRaw: bigint, balance: bigint, minQuote: bigint) {
   const e: Partial<Record<keyof Form, string>> = {};
   if (!f.name.trim() || f.name.length > 48) e.name = "1–48 karakter";
   if (!/^[A-Z0-9]{2,11}$/.test(f.symbol)) e.symbol = "2–11 büyük harf/rakam";
@@ -46,7 +46,7 @@ function validate(f: Form, rate: bigint, monRaw: bigint, balance: bigint) {
   const pct = Number(f.liquidityPct);
   if (!(pct >= 1 && pct <= 100)) e.liquidityPct = "%1–100";
   const usd = rate ? (monRaw * rate) / 10n ** 18n : 0n;
-  if (usd < 10_000_000n) e.mon = `En az 10 $ likidite (${rate ? fmtMon((10_000_000n * 10n ** 18n + rate - 1n) / rate, symbol) : "—"})`;
+  if (usd < minQuote) e.mon = `En az ${fmtUsd(minQuote)} likidite (${rate ? fmtMon((minQuote * 10n ** 18n + rate - 1n) / rate, symbol) : "—"})`;
   else if (monRaw >= balance) e.mon = `Yatırma adresindeki ${symbol} yetmiyor (işlem ücreti dahil)`;
   return e;
 }
@@ -82,7 +82,7 @@ export function Launch() {
     monRaw = f.mon ? toRaw(f.mon, 18) : 0n;
   } catch {}
   const bal = balance.data ?? 0n;
-  const errors = validate(f, rate, monRaw, bal);
+  const errors = validate(f, rate, monRaw, bal, BigInt(info?.launchMinQuote ?? "250000"));
   const valid = Object.keys(errors).length === 0;
   const usd = rate ? (monRaw * rate) / 10n ** 18n : 0n;
   const supply = Number(f.supply) || 0;

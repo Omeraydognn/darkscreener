@@ -24,6 +24,7 @@ library DarkPoolLib {
         bytes32 ordersHash;
         bytes32 poolsHash;
         bytes32 reservesCommitment;
+        bytes32 lotsHash;
     }
 
     /// @dev digest.rs `Settlement::digest`
@@ -41,7 +42,8 @@ library DarkPoolLib {
                     s.feeBps,
                     s.ordersHash,
                     s.poolsHash,
-                    s.reservesCommitment
+                    s.reservesCommitment,
+                    s.lotsHash
                 )
             )
         );
@@ -59,6 +61,17 @@ library DarkPoolLib {
     /// @dev batch.rs `orders_hash` içindeki shard zinciri adımı
     function orderChainStep(bytes32 chain, bytes32 orderId, uint256 spendCommitment) internal pure returns (bytes32) {
         return keccak256(abi.encodePacked(chain, orderId, spendCommitment));
+    }
+
+    /// @dev batch.rs `lots_hash` adımı
+    function lotChainStep(
+        bytes32 chain,
+        bytes32 sellOrderId,
+        bool filled,
+        bytes32 remainderCommitment,
+        bytes32 sealedRemainderHash
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(chain, sellOrderId, filled, remainderCommitment, sealedRemainderHash));
     }
 
     /// @dev batch.rs `pools_hash` adımı
