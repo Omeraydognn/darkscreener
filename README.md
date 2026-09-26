@@ -52,11 +52,11 @@ darkscreener is a privacy-focused dark pool DEX running on Monad. By hiding live
 | **TEE çekirdeği** | `tee-core/` | Saf Rust: ECIES (`ecies.rs`), emir formatı v2 (`order.rs`), FM-AMM (`clearing.rs`), sealed state (`state.rs`), settlement özeti (`digest.rs`), drand tlock (`timelock.rs`), Poseidon notları (`note.rs`), `process_batch` (`batch.rs`). Ağ, saat, dosya veya TEE API'si içermez. |
 | **TEE sağlayıcı** | `tee-attest/` | `TeeProvider` trait'i: `key_seed`, `trusted_unix_time`, `attest`, `key_is_direct`. Sağlayıcılar: `LocalDev` (donanımsız geliştirme) ve `Oyster` (Marlin Oyster CVM; anahtar KMS'ten `127.0.0.1:1100`, attestation `127.0.0.1:1300`). |
 | **Enclave sunucusu** | `tee-server/` | Axum HTTP: `GET /health`, `GET /pubkey`, `GET /attestation`, `POST /process`. `ForkGuard` aynı `(batch_id, prev_state_hash)` için tek emir kümesi imzalar. `RELAYER_ADDRESSES` verilirse yalnızca relayer imzalı (`x-relayer-signature`) istekleri kabul eder. |
-| **Kontratlar** | `contracts/` | `DarkVault.sol` (shielded not ağacı, gizli emirler, pencereler, 16 shard'lı emir zincirleri, Merkle claim, kaçış kapağı), `OwnerEnclaveRegistry.sol`, `SpendVerifier.sol` (Groth16), `lib/PoseidonTree.sol` (derinlik 20, 64 kök geçmişi), `lib/DarkPoolLib.sol`, `lib/DrandQuicknet.sol`, `lib/NoteLib.sol`. |
+| **Kontratlar** | `contracts/` | `DarkVault.sol` (shielded not ağacı, gizli emirler, pencereler, 16 shard'lı emir zincirleri, Merkle claim, kaçış kapağı, `createPoolFor`), `gateway/DarkUSD.sol` (1 dUSD = 1 $, yetkili basıcı), `gateway/MonGateway.sol` (MON → gizli dolar notu; çekimde anahtarsız CREATE2 kutusu + `redeem`), `launch/LaunchPad.sol` + `LaunchToken.sol` (izinsiz, sabit arzlı proje açılışı), `OwnerEnclaveRegistry.sol`, `SpendVerifier.sol` (Groth16), `lib/PoseidonTree.sol` (derinlik 20, 64 kök geçmişi), `lib/DarkPoolLib.sol`, `lib/DrandQuicknet.sol`, `lib/NoteLib.sol`. |
 | **ZK devresi** | `circuits/` | `spend.circom` → `Spend(20)`: üyelik kanıtı, nullifier, para üstü notu, harcama taahhüdü, `ctxHash` bağlaması (6.961 kısıt). `scripts/ceremony.sh` yerel Groth16 töreni. |
 | **Relayer** | `relayer/` | Rust + alloy: `index.rs` (yalnızca `finalized` blokları 100'lük parçalarla indeksler), `settler.rs` (enclave yanıtını kontratın tüm kontrolleriyle yerelde doğrular, sonra gönderir), `claimer.rs` (`returnRefunded` / `claimNote`), `reveal.rs` (drand beacon ile kapsülleri açar), `news.rs`, `api.rs`. |
 | **SDK** | `sdk/` | Tarayıcı ve Node istemcisi: `ecies.mjs`, `order.mjs`, `note.mjs` (poseidon-lite, `Tree`, `buildSpendInput`), `relayer.mjs`, `news.mjs`. E2E: `e2e/local.mjs`, `e2e/seed.mjs`, `e2e/post-news.mjs`. |
-| **Frontend** | `frontend/` | Next.js 16 terminali: `Terminal.tsx`, `GhostChart.tsx` (lightweight-charts), `TradePanel.tsx` (Al / Sat / Yatır / Çek), `BottomTabs.tsx` (Haberler, açılan dönemler, Proje, Güvenlik), `lib/wallet.ts` (`ShieldedWallet`: tarayıcıda snarkjs ile kanıt). |
+| **Frontend** | `frontend/` | Next.js 16, çok sayfalı: `/` Keşfet, `/token/[poolId]` (ghost chart, tıklanabilir imzalı haberler, proje ayrıntıları, `TradeBox`: dolarla gizli alım / yüzdeyle gizli satış), `/portfolio` (bilinen nakit + "Bilinmiyor" pozisyonlar, kilit sayaçları, yedek), `/launch` (token oluşturma formu), `/guide`. `components/app/`: `AppProvider` (hesap, not defteri, otomatik yatırma), `Shell`, `FundsModal` (QR'lı yatırma adresi + gazsız çekim). `lib/wallet.ts`: `ShieldedWallet.fromSecret`. |
 
 ### Uçtan uca akış
 
@@ -116,7 +116,11 @@ sequenceDiagram
 ## 🚀 Temel Özellikler
 
 - **Ghost chart:** Yalnızca kilidi açılmış batch'lerden gelen mumlar, hacim ve 30 günlük TWAP gösterilir. Son 7 gün taralı "karanlık bölge"dir ve bir sonraki açılışa geri sayım içerir.
-- **Tarayıcıda ZK:** `ShieldedWallet` Groth16 kanıtını `snarkjs` ile tarayıcıda üretir (yerelde yaklaşık 0,4 sn). Anahtarlar cüzdan imzasından türetilir. Not defteri tarayıcıda tutulur ve yedeği alınabilir.
+- **Cüzdansız yatırma:** Gizli hesap tarayıcıda tek bir anahtardır (isteğe bağlı olarak cüzdan imzasından türetilir). Hesaba özel yatırma adresine (QR) MON gönderilir; `AppProvider` bunu `MonGateway.depositNative` ile otomatik olarak gizli dolar notuna çevirir (testnet demo kuru `usdPerMon`). Çekim MON ya da dUSD olarak, gazı relayer ödeyerek yapılır.
+- **Dolarla al, yüzdeyle sat:** Alımda yalnızca dolar tutarı, satışta yalnızca yüzde (%25/50/75/100/diğer) girilir; tutar gerekirse birden çok nota bölünür. Alınan miktar ve satış geliri 7 gün sonra görünür.
+- **Portföy:** Bilinen nakit, yatırılan ve satılan tutarlar; kilitli pozisyonlar "Bilinmiyor" ve açılışa kalan süreyle gösterilir.
+- **Token oluşturma:** `/launch` formu projeyi ayrıntılı ister; `LaunchPad.launch` sabit arzlı token basar ve MON'la başlangıç likiditesi koyarak gizli havuzu açar. Meta veri zincirdeki `metadataHash`'e bağlıdır; projeyi açan hesap arayüzden imzalı haber yayınlayabilir.
+- **Tarayıcıda ZK:** `ShieldedWallet` Groth16 kanıtını `snarkjs` ile tarayıcıda üretir (yerelde yaklaşık 0,4 sn). Not defteri tarayıcıda tutulur ve yedeği alınabilir.
 - **Gizli al/sat:** Emir tutarı, yönü ve havuz kimliği (`pool_id`) şifreli metnin içindedir. Tek vault birden çok havuzu yönetir, dolayısıyla zincirde hangi projenin alındığı bile görünmez.
 - **Otomatik iade:** Çözülemeyen ya da geçersiz emir `Refunded` olur. Harcanan tutar, kullanıcı hiçbir işlem yapmadan yeni bir gizli not olarak ağaca döner.
 - **Gazsız çekim:** `POST /v1/withdrawals`, `withdrawContext(recipient)` ile kanıta bağlanır. Fonlar bakiyesi sıfır olan yeni bir adrese gider.
@@ -257,11 +261,11 @@ Deploy sonrasında tüm adresler `contracts/deployments/10143.json` dosyasına y
 
 | Paket | Komut | İçerik |
 |---|---|---|
-| `tee-core`, `tee-attest`, `tee-server`, `relayer` | `cargo test --workspace` | 45 test: ECIES, clearing, sealed state, drand vektörü (tur 1000), Poseidon circomlib vektörleri, fork koruması, relayer imza yetkisi |
-| `contracts` | `forge test` | 20 test: fixture ile Rust↔Solidity uyumu, korunum (kaçışta vault sıfıra iner), saldırılar, gaz profili |
+| `tee-core`, `tee-attest`, `tee-server`, `relayer` | `cargo test --workspace` | 46 test: ECIES, clearing, sealed state, drand vektörü (tur 1000), Poseidon circomlib vektörleri, fork koruması, relayer imza yetkisi |
+| `contracts` | `forge test` | 29 test: fixture ile Rust↔Solidity uyumu, korunum (kaçışta vault sıfıra iner), saldırılar, gaz profili, MON gateway ve launchpad |
 | `circuits` | `npm test` | 4 test: `Spend(20)` doğru/yanlış tanıklar |
 | `sdk` | `npm test` | 4 test: JS ↔ Rust ECIES, emir ve sonuç formatı |
-| E2E | `./scripts/e2e-local.sh` | Yatırma → gizli alım → bozuk emrin iadesi → settle → 7 gün → claim → gazsız çekim |
+| E2E | `./scripts/e2e-local.sh` | MON yatırma → gizli alım → bozuk emrin iadesi → settle → 7 gün → claim → MON ve dUSD olarak gazsız çekim |
 
 Monad testnet'in anvil fork'unda ölçülen gaz (EVM fiyatlaması): `submitShieldedOrder` ≈ 1,15M, 2 emirli `settleBatch` ≈ 246k, `withdraw` ≈ 1,13M.
 
@@ -273,5 +277,4 @@ Monad testnet'in anvil fork'unda ölçülen gaz (EVM fiyatlaması): `submitShiel
 - **Donanım TEE'si:** Marlin Oyster CVM'e geçiş (`oyster/docker-compose.yml`). Enclave adresi imaj kimliğinden `oyster-cvm kms-derive` ile herkes tarafından doğrulanabilir. Registry'yi zincir üstü Nitro attestation doğrulamasına bağlamak da bu adıma dahil.
 - **Mainnet güvenliği:** Perpetual Powers of Tau + çok taraflı phase-2 töreni, `OwnerEnclaveRegistry` yerine multisig/DAO yönetimi ve bağımsız denetim.
 - **Şifreli limit emirleri:** Emir formatına (`order.rs` v2) fiyat sınırı eklenmesi.
-- **Proje paneli:** Ekiplerin haberlerini arayüzden imzalayıp yayınlayacağı bir sayfa (şu an `sdk/e2e/post-news.mjs` ve `POST /v1/news`).
 - **Kalıcı altyapı:** Relayer'ın sunucuya taşınması, çoklu relayer (`RELAYER_ADDRESSES` zaten liste alır) ve indeks anlık görüntüleri.

@@ -25,9 +25,12 @@ new_key() { cast wallet new --json | jq -r '.[0].private_key'; }
 if [ ! -f "$T/keys.env" ]; then
   { echo "DEPLOYER_KEY=$(new_key)"; echo "RELAYER_KEY=$(new_key)"; } > "$T/keys.env"
 fi
-if [ ! -f "$T/news-keys.json" ]; then
-  jq -n --arg a "$(new_key)" --arg b "$(new_key)" --arg c "$(new_key)" '{"1": $a, "2": $b, "3": $c}' > "$T/news-keys.json"
-fi
+if [ ! -f "$T/news-keys.json" ]; then echo '{}' > "$T/news-keys.json"; fi
+for i in 1 2 3 4; do # demo projelerin haber anahtarları (ArfDAO = 4)
+  if [ "$(jq -r --arg i "$i" '.[$i] // empty' "$T/news-keys.json")" = "" ]; then
+    jq --arg i "$i" --arg k "$(new_key)" '.[$i]=$k' "$T/news-keys.json" > "$T/news-keys.tmp" && mv "$T/news-keys.tmp" "$T/news-keys.json"
+  fi
+done
 set -a; . "$T/keys.env"; set +a
 DEPLOYER=$(cast wallet address "$DEPLOYER_KEY")
 RELAYER=$(cast wallet address "$RELAYER_KEY")
@@ -57,7 +60,7 @@ status)
 deploy)
   [ -f "$T/deployed" ] && { echo "zaten deploy edildi (yeniden için: rm $T/deployed)"; exit 1; }
   B=$(cast balance "$DEPLOYER" --rpc-url "$RPC")
-  NEED=3000000000000000000 # deploy ~1.6 + kurulum ~0.4 + relayer'a en az ~0.7 MON
+  NEED=3500000000000000000 # deploy ~2 + kurulum ~0.5 + relayer'a en az ~0.7 MON
   if [ "$(echo "$B < $NEED" | bc)" = 1 ]; then
     echo "deployer bakiyesi yetersiz: $(bal "$DEPLOYER") MON (gereken en az 3, önerilen 10+)."
     echo "Monad testnet musluğundan şu adrese MON gönderin: $DEPLOYER"; exit 1
@@ -90,12 +93,13 @@ up)
   D=contracts/deployments/10143.json
   VAULT=$(jq -r .vault $D)
   NK=$T/news-keys.json
-  jq -n --arg s1 "$(cast wallet address "$(jq -r '."1"' "$NK")")" --arg s2 "$(cast wallet address "$(jq -r '."2"' "$NK")")" \
-        --arg s3 "$(cast wallet address "$(jq -r '."3"' "$NK")")" '{
-    "1": {name: "Nebula Compute", symbol: "NEBC", description: "DEMO — kurgusal test projesi: merkeziyetsiz GPU hesaplama pazarı. Token değersiz test tokenıdır.", website: "", twitter: "", newsSigners: [$s1]},
-    "2": {name: "Orbit Relay", symbol: "ORBR", description: "DEMO — kurgusal test projesi: zincirler arası mesaj taşıma ağı. Token değersiz test tokenıdır.", website: "", twitter: "", newsSigners: [$s2]},
-    "3": {name: "Vela Storage", symbol: "VELS", description: "DEMO — kurgusal test projesi: şifreli dağıtık depolama. Token değersiz test tokenıdır.", website: "", twitter: "", newsSigners: [$s3]}
-  }' > "$T/projects.json"
+  # Havuz 1000+ launchpad projeleri relayer tarafından eklenir; dosya yalnızca ilk kurulumda yazılır.
+  if [ ! -f "$T/projects.json" ]; then
+    signer() { cast wallet address "$(jq -r --arg i "$1" '.[$i]' "$NK")"; }
+    jq --arg s1 "$(signer 1)" --arg s2 "$(signer 2)" --arg s3 "$(signer 3)" --arg s4 "$(signer 4)" \
+      '."1".newsSigners=[$s1] | ."2".newsSigners=[$s2] | ."3".newsSigners=[$s3] | ."4".newsSigners=[$s4]' \
+      scripts/projects.template.json > "$T/projects.json"
+  fi
   touch "$T/news.jsonl"
   cat > "$T/relayer.env" <<EOF
 RPC_URL=$RPC
@@ -118,7 +122,6 @@ NEXT_PUBLIC_CHAIN_ID=10143
 NEXT_PUBLIC_VAULT=$VAULT
 NEXT_PUBLIC_CHAIN_NAME=Monad Testnet
 NEXT_PUBLIC_EXPLORER_URL=$EXPLORER
-NEXT_PUBLIC_TEST_TOKENS=1
 EOF
   start_enclave
   trap 'kill ${ENCLAVE_PID:-} ${RELAYER_PID:-} 2>/dev/null || true' EXIT INT TERM

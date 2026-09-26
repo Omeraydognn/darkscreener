@@ -6,8 +6,6 @@ export const config = {
   vault: (process.env.NEXT_PUBLIC_VAULT ?? "0x0000000000000000000000000000000000000000") as `0x${string}`,
   /** Yalnızca yerel anvil: geçici geliştirici cüzdanı + test token musluğu */
   devChain: process.env.NEXT_PUBLIC_DEV_CHAIN === "1",
-  /** Testnet demo: token'lar herkese açık mint'li test token'ları; cüzdanla musluk gösterilir */
-  testTokens: process.env.NEXT_PUBLIC_TEST_TOKENS === "1" || process.env.NEXT_PUBLIC_DEV_CHAIN === "1",
   explorerUrl: process.env.NEXT_PUBLIC_EXPLORER_URL ?? "",
   chainName: process.env.NEXT_PUBLIC_CHAIN_NAME ?? (process.env.NEXT_PUBLIC_DEV_CHAIN === "1" ? "Yerel (anvil)" : "Monad Testnet"),
 };

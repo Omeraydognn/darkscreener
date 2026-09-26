@@ -16,7 +16,10 @@ export function TokenView({ poolId }: { poolId: number }) {
   const history = usePoll(() => api.history(poolId), 15_000, [poolId]);
   const news = usePoll(() => api.news(poolId), 10_000, [poolId]);
   const [themeRaw] = useStoredString("darkscreener:theme");
-  const pool = pools?.find((p) => p.poolId === poolId);
+  const listed = pools?.find((p) => p.poolId === poolId);
+  // Yeni açılan bir proje, relayer onu kesinleşmiş blokta görene kadar listede olmayabilir: kısa aralıkla yeniden dene.
+  const late = usePoll(async () => (pools && !listed ? (await api.pools()).find((p) => p.poolId === poolId) ?? null : null), 2_500, [!!pools, !!listed, poolId]);
+  const pool = listed ?? late.data ?? undefined;
   const chainOffset = info ? info.finalizedTimestamp - info.fetchedAt : 0;
   const p = pool?.project;
   const retry = () => {
@@ -32,7 +35,7 @@ export function TokenView({ poolId }: { poolId: number }) {
         <div className="connection-notice mt-5" role="alert"><Radio size={17} /><div><strong>Veri bağlantısı bekleniyor</strong><span>Proje verileri alınamıyor. Otomatik yeniden denenecek.</span></div><button onClick={retry}><RefreshCw size={14} /> Tekrar dene</button></div>
       )}
       {pools && !pool ? (
-        <div className="empty-project">Bu proje bulunamadı. Keşfet sayfasından bir proje seç.</div>
+        <div className="empty-project">Proje aranıyor… Yeni açılan projeler birkaç saniye içinde görünür. Görünmezse Keşfet sayfasından bir proje seç.</div>
       ) : (
         <>
           <section className="project-heading mt-6">

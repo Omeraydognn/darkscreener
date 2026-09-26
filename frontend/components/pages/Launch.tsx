@@ -52,7 +52,7 @@ function validate(f: Form, rate: bigint, monRaw: bigint, balance: bigint) {
 }
 
 export function Launch() {
-  const { wallet, info, setSweepPaused } = useApp();
+  const { wallet, info, setSweepPaused, refreshData } = useApp();
   const router = useRouter();
   const [f, setF] = useState<Form>(empty);
   const [touched, setTouched] = useState(false);
@@ -110,6 +110,7 @@ export function Launch() {
         { name: f.name.trim(), symbol: f.symbol, supply: BigInt(supply) * E18, liquidityBase: BigInt(liqTokens) * E18, mon: monRaw, metadata },
         setBusy,
       );
+      refreshData();
       router.push(`/token/${poolId}`);
     } catch (e) {
       setErr((e as Error).message);
@@ -125,7 +126,7 @@ export function Launch() {
           <span className="mini-eyebrow">PROJE AÇILIŞI</span>
           <h1 className="mt-1 text-2xl font-semibold">Token oluştur</h1>
           <p className="mt-1 max-w-2xl text-muted">
-            Sabit arzlı token'ın basılır ve gizli havuzu açılır. Başlangıç likiditesi açıktır; sonrasındaki tüm işlemler karanlıktır ve fiyat 7 gün gecikmeli görünür.
+            Sabit arzlı token&apos;ın basılır ve gizli havuzu açılır. Başlangıç likiditesi açıktır; sonrasındaki tüm işlemler karanlıktır ve fiyat 7 gün gecikmeli görünür.
             Yatırımcılar projeni yalnızca anlattıkların ve yayınladığın haberlerle değerlendirir; bu yüzden ayrıntılı yaz.
           </p>
         </header>
@@ -190,7 +191,7 @@ export function Launch() {
         <FundBox address={wallet.depositAddress} balance={bal} />
         {err && <p className="form-error" role="alert">{err}</p>}
         <button type="submit" className="btn-primary w-full" disabled={!!busy || (touched && !valid)}>
-          {busy ? <><Loader2 size={15} className="animate-spin" /> {busy}</> : <><Rocket size={15} /> Token'ı oluştur ve havuzu aç</>}
+          {busy ? <><Loader2 size={15} className="animate-spin" /> {busy}</> : <><Rocket size={15} /> Token&apos;ı oluştur ve havuzu aç</>}
         </button>
         <p className="text-xs text-muted">Proje bilgileri açılış işlemine özetiyle bağlanır; sonradan değiştirilemez. Haber yayınlama yetkisi bu hesaba verilir.</p>
       </aside>
