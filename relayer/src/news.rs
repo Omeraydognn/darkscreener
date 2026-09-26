@@ -18,7 +18,7 @@ use alloy::primitives::{keccak256, Address, Signature};
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
     pub name: String,
@@ -29,8 +29,56 @@ pub struct Project {
     pub website: String,
     #[serde(default)]
     pub twitter: String,
+    #[serde(default)]
+    pub telegram: String,
+    #[serde(default)]
+    pub discord: String,
+    #[serde(default)]
+    pub github: String,
+    #[serde(default)]
+    pub whitepaper: String,
+    #[serde(default)]
+    pub logo: String,
+    #[serde(default)]
+    pub category: String,
+    /// Ekip, yol haritası, token dağılımı gibi uzun metinler (düz metin)
+    #[serde(default)]
+    pub team: String,
+    #[serde(default)]
+    pub roadmap: String,
+    #[serde(default)]
+    pub tokenomics: String,
     /// Haber imzalamaya yetkili adresler (projenin ekibi)
+    #[serde(default)]
     pub news_signers: Vec<Address>,
+}
+
+impl Project {
+    fn check(&self) -> Result<()> {
+        ensure!(!self.name.trim().is_empty() && self.name.len() <= 48, "name length");
+        ensure!(!self.symbol.trim().is_empty() && self.symbol.len() <= 11, "symbol length");
+        for (field, v, max) in [
+            ("description", &self.description, 4_000),
+            ("team", &self.team, 4_000),
+            ("roadmap", &self.roadmap, 4_000),
+            ("tokenomics", &self.tokenomics, 4_000),
+            ("category", &self.category, 40),
+        ] {
+            ensure!(v.len() <= max, "{field} too long");
+        }
+        for (field, v) in [
+            ("website", &self.website),
+            ("twitter", &self.twitter),
+            ("telegram", &self.telegram),
+            ("discord", &self.discord),
+            ("github", &self.github),
+            ("whitepaper", &self.whitepaper),
+            ("logo", &self.logo),
+        ] {
+            ensure!(v.is_empty() || (v.starts_with("https://") && v.len() <= 200), "{field} must be an https URL");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +106,8 @@ pub fn message(pool_id: u32, ts: u64, title: &str, body: &str, url: &str) -> Str
 }
 
 pub struct NewsStore {
-    pub projects: BTreeMap<u32, Project>,
+    projects: Mutex<BTreeMap<u32, Project>>,
+    projects_path: Option<PathBuf>,
     path: Option<PathBuf>,
     posts: Mutex<Vec<NewsPost>>,
 }
@@ -78,11 +127,35 @@ impl NewsStore {
                 }
             }
         }
-        Ok(Self { projects, path: news_file, posts: Mutex::new(posts) })
+        Ok(Self { projects: Mutex::new(projects), projects_path: projects_file, path: news_file, posts: Mutex::new(posts) })
+    }
+
+    pub fn project(&self, pool_id: u32) -> Option<Project> {
+        self.projects.lock().unwrap().get(&pool_id).cloned()
+    }
+
+    /// Launchpad ile açılmış bir projenin meta verisini kaydeder. `raw` (tam JSON metni) zincirdeki
+    /// `metadataHash`'e eşit olmalıdır: meta veri açılış işlemine bağlıdır, sonradan kimse
+    /// değiştiremez. Haber imzacısı zincirdeki `creator`'dır.
+    pub fn register_launched(&self, pool_id: u32, raw: &str, metadata_hash: [u8; 32], creator: Address) -> Result<Project> {
+        ensure!(raw.len() <= 20_000, "metadata too large");
+        ensure!(keccak256(raw.as_bytes()).0 == metadata_hash, "metadata does not match on-chain metadataHash");
+        let mut project: Project = serde_json::from_str(raw).context("metadata json")?;
+        project.check()?;
+        project.news_signers = vec![creator];
+        let mut projects = self.projects.lock().unwrap();
+        ensure!(!projects.contains_key(&pool_id), "project already registered");
+        projects.insert(pool_id, project.clone());
+        if let Some(path) = &self.projects_path {
+            let tmp = path.with_extension("json.tmp");
+            fs::write(&tmp, serde_json::to_vec_pretty(&*projects)?)?;
+            fs::rename(tmp, path)?;
+        }
+        Ok(project)
     }
 
     pub fn verify(&self, post: &NewsPost, now: u64) -> Result<Address> {
-        let project = self.projects.get(&post.pool_id).context("unknown project")?;
+        let project = self.project(post.pool_id).context("unknown project")?;
         ensure!(!post.title.trim().is_empty() && post.title.len() <= MAX_TITLE, "title length");
         ensure!(post.body.len() <= MAX_BODY, "body length");
         ensure!(post.url.is_empty() || post.url.starts_with("https://"), "url must be https");
@@ -126,16 +199,9 @@ mod tests {
         let mut projects = BTreeMap::new();
         projects.insert(
             1,
-            Project {
-                name: "A".into(),
-                symbol: "A".into(),
-                description: String::new(),
-                website: String::new(),
-                twitter: String::new(),
-                news_signers: vec![signer],
-            },
+            Project { name: "A".into(), symbol: "A".into(), news_signers: vec![signer], ..Default::default() },
         );
-        NewsStore { projects, path: None, posts: Mutex::new(vec![]) }
+        NewsStore { projects: Mutex::new(projects), projects_path: None, path: None, posts: Mutex::new(vec![]) }
     }
 
     fn post(key: &PrivateKeySigner, pool: u32, ts: u64, title: &str) -> NewsPost {
@@ -171,5 +237,19 @@ mod tests {
         assert!(s.add(p.clone(), now).is_ok());
         assert!(s.add(p, now).is_err());
         assert_eq!(s.list(Some(1), 10).len(), 2);
+    }
+
+    #[test]
+    fn launched_metadata_must_match_chain_hash() {
+        let s = store(Address::ZERO);
+        let creator = Address::repeat_byte(7);
+        let raw = r#"{"name":"ArfDAO","symbol":"ARF","website":"https://arfdao.dev"}"#;
+        let hash = keccak256(raw.as_bytes()).0;
+        assert!(s.register_launched(1000, raw, [0; 32], creator).is_err());
+        let bad = r#"{"name":"X","symbol":"X","website":"http://insecure"}"#;
+        assert!(s.register_launched(1001, bad, keccak256(bad.as_bytes()).0, creator).is_err());
+        let p = s.register_launched(1000, raw, hash, creator).unwrap();
+        assert_eq!(p.news_signers, vec![creator]);
+        assert!(s.register_launched(1000, raw, hash, creator).is_err(), "no overwrite");
     }
 }

@@ -42,8 +42,14 @@ export class RelayerClient {
     return this.#req("/v1/orders", { ciphertext, proof });
   }
 
-  withdraw(proof, token, amount, spendBlinding, recipient) {
-    return this.#req("/v1/withdrawals", { proof, token, amount, spendBlinding, recipient });
+  /** `redeemTo` verilirse çekim MON olarak yapılır; `recipient` = gateway.boxOf(redeemTo) olmalı. */
+  withdraw(proof, token, amount, spendBlinding, recipient, redeemTo) {
+    return this.#req("/v1/withdrawals", { proof, token, amount, spendBlinding, recipient, ...(redeemTo ? { redeemTo } : {}) });
+  }
+
+  /** Launchpad ile açılan projenin meta verisi (zincirdeki metadataHash'in ön görüntüsü). */
+  registerProject(poolId, metadata) {
+    return this.#req("/v1/projects", { poolId, metadata });
   }
 }
 

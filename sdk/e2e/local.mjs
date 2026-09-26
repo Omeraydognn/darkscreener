@@ -47,11 +47,13 @@ const vaultAbi = parseAbi([
   "function orders(bytes32) view returns (uint64 window, bool done, uint256 spendCommitment)",
   "function withdrawContext(address) view returns (uint256)",
 ]);
-const erc20Abi = parseAbi([
-  "function mint(address to, uint256 amount)",
-  "function approve(address spender, uint256 amount) returns (bool)",
-  "function balanceOf(address) view returns (uint256)",
+const erc20Abi = parseAbi(["function balanceOf(address) view returns (uint256)"]);
+const gatewayAbi = parseAbi([
+  "function depositNative(uint256 secretHash, uint128 expected) payable",
+  "function usdPerMon() view returns (uint256)",
+  "function boxOf(address) view returns (address)",
 ]);
+const GATEWAY = getAddress(deploy.gateway);
 const VAULT = getAddress(deploy.vault);
 const USDC = getAddress(deploy.quoteToken);
 const E6 = 1_000_000n;
@@ -99,16 +101,17 @@ async function main() {
   const viewPub = secp256k1.getPublicKey(viewSk, true);
   ok("oluşturuldu (yalnızca bu süreçte)");
 
-  step("iki not yatır: 1000 USDC ve 5 USDC");
+  step("MON gönder → gizli dolar notu: 1000 $ ve 5 $ (gateway, demo kuru)");
   const notes = [
     { token: BigInt(USDC), amount: 1000n * E6, spendKey, blinding: randomField() },
     { token: BigInt(USDC), amount: 5n * E6, spendKey, blinding: randomField() },
   ];
-  await send("mint", [user.address, 1005n * E6], USDC, erc20Abi);
-  await send("approve", [VAULT, 1005n * E6], USDC, erc20Abi);
+  const rate = await pub.readContract({ address: GATEWAY, abi: gatewayAbi, functionName: "usdPerMon" });
   for (const n of notes) {
     n.commitment = h.commitment(n.token, n.amount, h.secretHash(owner, n.blinding));
-    await send("deposit", [USDC, n.amount, h.secretHash(owner, n.blinding)], VAULT);
+    const value = (n.amount * 10n ** 18n) / rate;
+    const hash = await wallet.writeContract({ address: GATEWAY, abi: gatewayAbi, functionName: "depositNative", args: [h.secretHash(owner, n.blinding), n.amount], value });
+    assert((await pub.waitForTransactionReceipt({ hash })).status === "success", "depositNative reverted");
   }
   let t = await until("relayer notları indeksler", async () => {
     const s = await syncTree(h);
@@ -184,19 +187,26 @@ async function main() {
     blinding: buy.changeBlinding,
   };
   const returned = { token: BigInt(USDC), amount: bad.amount, spendKey, blinding: bad.r };
-  for (const [name, n] of [["para üstü", change], ["iade", returned]]) {
+  for (const [name, n, asMon] of [["para üstü (MON olarak)", change, true], ["iade (dUSD olarak)", returned, false]]) {
     n.leafIndex = t.leaves.indexOf(h.commitment(n.token, n.amount, h.secretHash(owner, n.blinding)));
     assert(n.leafIndex >= 0, `${name} note not in tree`);
-    const recipient = privateKeyToAccount(generatePrivateKey()).address;
+    const to = privateKeyToAccount(generatePrivateKey()).address;
+    const recipient = asMon ? await pub.readContract({ address: GATEWAY, abi: gatewayAbi, functionName: "boxOf", args: [to] }) : to;
     const ctx = await pub.readContract({ address: VAULT, abi: vaultAbi, functionName: "withdrawContext", args: [recipient] });
     const sb = randomField();
     const p = await proveSpend(h, t.tree, n, { amount: n.amount, blinding: sb }, randomField(), ctx);
-    await relayer.withdraw(proofForRelayer(p), USDC, n.amount, sb, recipient);
-    const bal = await pub.readContract({ address: USDC, abi: erc20Abi, functionName: "balanceOf", args: [recipient] });
-    const eth = await pub.getBalance({ address: recipient });
-    assert(bal === n.amount, `${name} balance`);
-    assert(eth === 0n, "recipient paid no gas");
-    ok(`${name}: ${Number(n.amount) / 1e6} USDC -> ${recipient.slice(0, 10)}… (ETH bakiyesi 0)`);
+    const res = await relayer.withdraw(proofForRelayer(p), USDC, n.amount, sb, recipient, asMon ? to : undefined);
+    const eth = await pub.getBalance({ address: to });
+    if (asMon) {
+      assert(res.redeemTxHash && !res.redeemError, `redeem failed: ${res.redeemError}`);
+      assert(eth === (n.amount * 10n ** 18n) / rate, `${name} MON amount`);
+      ok(`${name}: ${Number(n.amount) / 1e6} $ -> ${Number(eth) / 1e18} MON @ ${to.slice(0, 10)}… (gazı relayer ödedi)`);
+    } else {
+      const bal = await pub.readContract({ address: USDC, abi: erc20Abi, functionName: "balanceOf", args: [to] });
+      assert(bal === n.amount, `${name} balance`);
+      assert(eth === 0n, "recipient paid no gas");
+      ok(`${name}: ${Number(n.amount) / 1e6} dUSD -> ${to.slice(0, 10)}… (ETH bakiyesi 0)`);
+    }
   }
 
   console.log("\nUÇTAN UCA TEST GEÇTİ");

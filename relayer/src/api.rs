@@ -66,6 +66,7 @@ pub fn router(ctx: Arc<AppCtx>) -> Router {
         .route("/v1/pools", get(pools))
         .route("/v1/pools/{id}/history", get(history))
         .route("/v1/news", get(news_list).post(news_post))
+        .route("/v1/projects", post(register_project))
         // Tarayıcıdaki frontend farklı origin'den çağırır. Kimlik bilgisi (cookie) kullanılmaz.
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .with_state(ctx)
@@ -177,6 +178,16 @@ async fn info(State(ctx): State<Arc<AppCtx>>) -> Result<Json<Value>, ApiError> {
         Some(a) => chain.registry.isEnclave(a).call().await.map_err(anyhow::Error::from)?,
         None => false,
     };
+    let gateway = match &chain.gateway {
+        Some(g) => {
+            let rate = g.usdPerMon().call().await.map_err(anyhow::Error::from)?;
+            use alloy::providers::Provider;
+            let balance = chain.provider.get_balance(*g.address()).await.map_err(anyhow::Error::from)?;
+            // usdPerMon: 1 MON başına dUSD birimi (6 ondalık); balance: MON çekim likiditesi (wei)
+            Some(json!({ "address": g.address(), "usdPerMon": rate.to_string(), "balance": balance.to_string() }))
+        }
+        None => None,
+    };
     let st = ctx.index.state.read().await;
     Ok(Json(json!({
         "chainId": chain.chain_id,
@@ -197,6 +208,8 @@ async fn info(State(ctx): State<Arc<AppCtx>>) -> Result<Json<Value>, ApiError> {
         "windowSeconds": chain.window_seconds,
         "lockSeconds": dark_tee_core::timelock::LOCK_SECONDS,
         "finalizedTimestamp": st.finalized_timestamp,
+        "launchpad": chain.launchpad.as_ref().map(|l| *l.address()),
+        "gateway": gateway,
     })))
 }
 
@@ -301,6 +314,10 @@ struct WithdrawReq {
     amount: String,
     spend_blinding: String,
     recipient: Address,
+    /// Verilirse çekim MON olarak yapılır: `recipient` = gateway.boxOf(redeemTo) olmalı; relayer
+    /// çekimden sonra gateway.redeem(redeemTo) çağırır (gazı relayer öder).
+    #[serde(default)]
+    redeem_to: Option<Address>,
 }
 
 async fn withdraw(
@@ -312,13 +329,58 @@ async fn withdraw(
     let proof = req.proof.to_call()?;
     let amount = u128::try_from(num(&req.amount)?).map_err(|_| bad("amount exceeds u128"))?;
     let chain = &ctx.chain;
+    if let Some(to) = req.redeem_to {
+        let gw = chain.gateway.as_ref().ok_or_else(|| bad("MON çekimi bu dağıtımda yok"))?;
+        let box_addr = gw.boxOf(to).call().await.map_err(anyhow::Error::from)?;
+        if box_addr != req.recipient || req.token != chain.quote_token {
+            return Err(bad("recipient must be gateway.boxOf(redeemTo) and token dUSD"));
+        }
+    }
     let tx = chain
         .send(
             &format!("withdraw -> {}", req.recipient),
             chain.vault.withdraw(proof, req.token, amount, num(&req.spend_blinding)?, req.recipient),
         )
         .await?;
-    Ok(Json(json!({ "txHash": tx })))
+    let (mut redeem_tx, mut redeem_error) = (None, None);
+    if let (Some(to), Some(gw)) = (req.redeem_to, chain.gateway.as_ref()) {
+        // Başarısız olursa (ör. gateway'de yeterli MON yok) dUSD kutuda güvende kalır ve
+        // redeem(to) sonra herkes tarafından yeniden çağrılabilir.
+        match chain.send(&format!("redeem MON -> {to}"), gw.redeem(to)).await {
+            Ok(h) => redeem_tx = Some(h),
+            Err(e) => {
+                tracing::warn!(error = %e, %to, "redeem failed; dUSD stays in box");
+                redeem_error = Some(e.to_string());
+            }
+        }
+    }
+    Ok(Json(json!({ "txHash": tx, "redeemTxHash": redeem_tx, "redeemError": redeem_error })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RegisterProjectReq {
+    pool_id: u32,
+    /// LaunchPad.launch'a verilen metadataHash'in ön görüntüsü (tam JSON metni)
+    metadata: String,
+}
+
+async fn register_project(
+    State(ctx): State<Arc<AppCtx>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(req): Json<RegisterProjectReq>,
+) -> Result<Json<Value>, ApiError> {
+    ctx.limiter.check(peer.ip())?;
+    let pad = ctx.chain.launchpad.as_ref().ok_or_else(|| bad("launchpad yok"))?;
+    let l = pad.launches(req.pool_id).call().await.map_err(anyhow::Error::from)?;
+    if l.creator == Address::ZERO {
+        return Err(ApiError(StatusCode::NOT_FOUND, "no launch for this pool".into()));
+    }
+    let project = ctx
+        .news
+        .register_launched(req.pool_id, &req.metadata, l.metadataHash.0, l.creator)
+        .map_err(|e| bad(e.to_string()))?;
+    Ok(Json(json!({ "poolId": req.pool_id, "project": project })))
 }
 
 async fn token_meta(ctx: &AppCtx, token: Address) -> Value {
@@ -347,7 +409,7 @@ async fn pools(State(ctx): State<Arc<AppCtx>>) -> Json<Value> {
             "createdAt": ctx.chain.window_end(p.window),
             // Havuz açılışı herkese açık bir işlemdir; sonrasındaki rezervler 7 gün gecikmeli açılır.
             "initialLiquidity": { "base": p.init_base.to_string(), "quote": p.init_quote.to_string() },
-            "project": ctx.news.projects.get(&p.pool_id),
+            "project": ctx.news.project(p.pool_id),
             "news24h": news_24h,
         }));
     }

@@ -1,0 +1,50 @@
+{
+  "1": {
+    "name": "Nebula Compute",
+    "symbol": "NEBC",
+    "category": "Altyapı · Yapay zekâ",
+    "description": "DEMO — kurgusal test projesi. Atıl GPU kapasitesini yapay zekâ eğitim ve çıkarım işleriyle eşleştiren merkeziyetsiz hesaplama pazarı. Token değersiz bir test tokenıdır.",
+    "website": "",
+    "twitter": "",
+    "team": "Kurgusal ekip: dağıtık sistemler ve GPU zamanlama üzerine çalışan 6 kişilik çekirdek ekip.",
+    "roadmap": "Ç1: testnet sağlayıcı kayıtları\nÇ2: denetim ve mainnet beta\nÇ3: çıkarım API'si",
+    "tokenomics": "Toplam arz 5.000.000 NEBC · %20 başlangıç likiditesi · %80 proje hazinesi",
+    "newsSigners": []
+  },
+  "2": {
+    "name": "Orbit Relay",
+    "symbol": "ORBR",
+    "category": "Birlikte çalışabilirlik",
+    "description": "DEMO — kurgusal test projesi. Zincirler arası mesaj taşıma ağı. Token değersiz bir test tokenıdır.",
+    "website": "",
+    "twitter": "",
+    "team": "Kurgusal ekip: köprü güvenliği ve hafif istemci doğrulaması.",
+    "roadmap": "Ç1: L2 entegrasyonları\nÇ2: izinsiz röle operatörleri",
+    "tokenomics": "Toplam arz 2.000.000 ORBR · %20 başlangıç likiditesi · %80 proje hazinesi",
+    "newsSigners": []
+  },
+  "3": {
+    "name": "Vela Storage",
+    "symbol": "VELS",
+    "category": "Depolama",
+    "description": "DEMO — kurgusal test projesi. Şifreli dağıtık depolama ağı. Token değersiz bir test tokenıdır.",
+    "website": "",
+    "twitter": "",
+    "team": "Kurgusal ekip: silme kodlaması ve depolama kanıtları.",
+    "roadmap": "Ç1: sağlayıcı ödül modeli\nÇ2: kalıcı arşiv katmanı",
+    "tokenomics": "Toplam arz 25.000.000 VELS · %20 başlangıç likiditesi · %80 proje hazinesi",
+    "newsSigners": []
+  },
+  "4": {
+    "name": "ArfDAO",
+    "symbol": "ARF",
+    "category": "Topluluk · Geliştirici DAO",
+    "description": "ArfDAO, farklı disiplinlerden geliştiricileri bir araya getiren bir geliştirici topluluğudur. Topluluğun geliştirdiği ilk ürün ArfHE Wallet'tır. Testnet'teki ARF bir demo tokenıdır; başlangıç fiyatı yaklaşık 0,22 $ (~10 TL).",
+    "website": "https://arfdao.dev",
+    "twitter": "",
+    "team": "ArfDAO disiplinlerarası geliştirici topluluğu.",
+    "roadmap": "ArfHE Wallet yayında · Topluluk buluşmaları · Yeni topluluk projeleri",
+    "tokenomics": "Toplam arz 25.000.000 ARF · %20 başlangıç likiditesi · %80 proje hazinesi",
+    "newsSigners": []
+  }
+}

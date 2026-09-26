@@ -9,6 +9,15 @@ export type Project = {
   description: string;
   website: string;
   twitter: string;
+  telegram?: string;
+  discord?: string;
+  github?: string;
+  whitepaper?: string;
+  logo?: string;
+  category?: string;
+  team?: string;
+  roadmap?: string;
+  tokenomics?: string;
   newsSigners: string[];
 };
 
@@ -65,6 +74,9 @@ export type Info = {
   windowSeconds: number;
   lockSeconds: number;
   finalizedTimestamp: number;
+  launchpad?: `0x${string}` | null;
+  /** usdPerMon: 1 MON başına dUSD birimi (6 ondalık); balance: MON çekim likiditesi (wei) */
+  gateway?: { address: `0x${string}`; usdPerMon: string; balance: string } | null;
 };
 
 export type OrderStatus = {

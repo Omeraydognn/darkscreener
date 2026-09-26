@@ -41,15 +41,29 @@ const vaultAbi = parseAbi([
   "function lastSettledWindow() view returns (uint64)",
 ]);
 const erc20Abi = parseAbi([
-  "function mint(address to, uint256 amount)",
+  "function transfer(address to, uint256 amount) returns (bool)",
   "function approve(address spender, uint256 amount) returns (bool)",
 ]);
+const gatewayAbi = parseAbi([
+  "function depositNative(uint256 secretHash, uint128 expected) payable",
+  "function usdPerMon() view returns (uint256)",
+]);
+const GATEWAY = getAddress(deploy.gateway);
+const deployer = privateKeyToAccount(keys.deployer);
 
 // Proje eğilimleri: alım olasılığı günlere göre (0..1)
 const BIAS = [
   (d) => 0.72 - 0.15 * Math.sin(d / 3), // Nebula: güçlü talep
   (d) => 0.5 + 0.25 * Math.sin(d / 1.7), // Orbit: dalgalı
   (d) => 0.32 + 0.1 * Math.cos(d / 2), // Vela: satış baskısı
+  (d) => 0.5 + 0.04 * Math.sin(d / 2.5), // ArfDAO: dengeli, ~0.22 $ (~10 TL) civarında yatay
+];
+// Havuz başına emir büyüklüğü (alım $ aralığı, satış binde aralığı)
+const SIZE = [
+  [300, 6000, 5, 40],
+  [300, 6000, 5, 40],
+  [300, 6000, 5, 40],
+  [100, 1500, 2, 10],
 ];
 const rand = (a, b) => a + Math.random() * (b - a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -102,14 +116,25 @@ async function main() {
     [BASES[0], 150_000n * E18],
     [BASES[1], 40_000n * E18],
     [BASES[2], 2_000_000n * E18],
+    [BASES[3], 1_000_000n * E18],
   ];
+  const rate = await pub.readContract({ address: GATEWAY, abi: gatewayAbi, functionName: "usdPerMon" });
   for (const t of traders) {
+    // Nakit: MON → gateway → gizli dolar notu (uygulamadaki yatırma yolu). Proje token'ları:
+    // sabit arzlı; hazineden (yayıncı) dağıtılır ve doğrudan vault'a yatırılır.
+    await pub.request({ method: "anvil_setBalance", params: [t.account.address, "0xD3C21BCECCEDA1000000"] });
     for (const [token, amount] of deposits) {
       const blinding = randomField();
       const secret = h.secretHash(t.owner, blinding);
-      await tx(t.account, token, erc20Abi, "mint", [t.account.address, amount]);
-      await tx(t.account, token, erc20Abi, "approve", [VAULT, amount]);
-      await tx(t.account, VAULT, vaultAbi, "deposit", [token, amount, secret]);
+      if (token === USDC) {
+        const w = createWalletClient({ chain, transport: http(RPC), account: t.account });
+        const hash = await w.writeContract({ address: GATEWAY, abi: gatewayAbi, functionName: "depositNative", args: [secret, amount], value: (amount * E18) / rate });
+        if ((await pub.waitForTransactionReceipt({ hash })).status !== "success") throw new Error("depositNative reverted");
+      } else {
+        await tx(deployer, token, erc20Abi, "transfer", [t.account.address, amount]);
+        await tx(t.account, token, erc20Abi, "approve", [VAULT, amount]);
+        await tx(t.account, VAULT, vaultAbi, "deposit", [token, amount, secret]);
+      }
       t.notes[token] = { token: BigInt(token), amount, spendKey: t.spendKey, blinding, commitment: h.commitment(BigInt(token), amount, secret) };
     }
   }
@@ -123,15 +148,16 @@ async function main() {
       // Her turda her trader en fazla bir emir (aynı notu iki kez harcamasın)
       for (const t of traders) {
         if (Math.random() < 0.3) continue;
-        const pool = Math.floor(Math.random() * 3);
+        const pool = Math.floor(Math.random() * BASES.length);
         const buy = Math.random() < BIAS[pool](day + round / ROUNDS_PER_DAY);
         const inToken = buy ? USDC : BASES[pool];
         const note = t.notes[inToken];
         note.leafIndex = leaves.indexOf(note.commitment);
         if (note.leafIndex < 0) throw new Error("note not in tree");
+        const [bMin, bMax, sMin, sMax] = SIZE[pool];
         const amount = buy
-          ? BigInt(Math.floor(rand(300, 6000))) * E6
-          : (note.amount * BigInt(Math.floor(rand(5, 40)))) / 1000n;
+          ? BigInt(Math.floor(rand(bMin, bMax))) * E6
+          : (note.amount * BigInt(Math.floor(rand(sMin, sMax)))) / 1000n;
         if (amount === 0n || amount > note.amount) continue;
 
         const spendBlinding = h.secretHash(t.owner, randomField());
@@ -172,21 +198,24 @@ async function main() {
   }
 
   // ---- imzalı proje haberleri (gerçek zaman damgasıyla; relayer ±10 dk kabul eder)
+  const ARF = "https://arfdao.dev";
   const NEWS = [
     [1, "Mainnet beta başvuruları açıldı", "İlk 500 GPU sağlayıcısı için beta kayıtları başladı. Denetim raporu yayında."],
     [1, "Denetim tamamlandı", "Bağımsız güvenlik denetimi kritik bulgu olmadan kapandı; rapor web sitesinde."],
     [2, "Köprü bakımı", "Relay köprüsü 2 saatlik planlı bakıma giriyor; fonlar güvende."],
     [2, "Yeni ağ ortaklığı", "İki yeni L2 ile mesaj taşıma entegrasyonu testnet'te canlı."],
     [3, "Depolama fiyatlandırması güncellendi", "Sağlayıcı ödüllerinde yeniden düzenleme: detaylar yönetişim forumunda."],
+    [4, "ArfDAO: Singapur'da disiplinlerarası geliştirici topluluğu", "ArfDAO, farklı disiplinlerden geliştiricileri bir araya getiren topluluğuyla Singapur'da. Topluluk projeleri ve katılım bilgileri arfdao.dev üzerinde.", ARF],
+    [4, "ArfHE Wallet canlıya alındı", "ArfDAO'nun geliştirdiği ArfHE Wallet projesi canlıya alındı. Ayrıntılar ve kullanım rehberi arfdao.dev üzerinde.", ARF],
   ];
-  for (const [poolId, title, body] of NEWS) {
+  for (const [poolId, title, body, url = ""] of NEWS) {
     const signer = privateKeyToAccount(keys.newsSigners[poolId - 1]);
     const ts = Math.floor(Date.now() / 1000);
-    const signature = await signer.signMessage({ message: newsMessage(poolId, ts, title, body, "") });
+    const signature = await signer.signMessage({ message: newsMessage(poolId, ts, title, body, url) });
     await fetch(`${process.env.RELAYER_URL}/v1/news`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ poolId, title, body, url: "", timestamp: ts, signature }),
+      body: JSON.stringify({ poolId, title, body, url, timestamp: ts, signature }),
     }).then(async (r) => {
       if (!r.ok) throw new Error(`news: ${r.status} ${await r.text()}`);
     });

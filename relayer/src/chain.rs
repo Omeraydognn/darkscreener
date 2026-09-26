@@ -102,6 +102,22 @@ sol! {
         function withdraw(SpendProof calldata p, address token, uint128 amount, uint256 spendBlinding, address recipient) external;
         function claimNote(uint64 batchId, bytes32 orderId, uint256 commitment, bytes32 sealedResultHash, bytes32[] calldata proof) external;
         function returnRefunded(uint64 batchId, bytes32 orderId, bytes32[] calldata proof) external;
+        function launchpad() external view returns (address);
+    }
+
+    #[sol(rpc)]
+    interface ILaunchPad {
+        function gateway() external view returns (address);
+        function launches(uint32 poolId) external view returns (address creator, address token, bytes32 metadataHash, uint64 time);
+    }
+
+    #[sol(rpc)]
+    interface IMonGateway {
+        error ZeroAmount();
+        error TransferFailed();
+        function usdPerMon() external view returns (uint256);
+        function boxOf(address to) external view returns (address);
+        function redeem(address to) external returns (uint256 value);
     }
 
     #[sol(rpc)]
@@ -136,6 +152,9 @@ pub struct Chain {
     pub fee_bps: u16,
     pub genesis_time: u64,
     pub window_seconds: u64,
+    /// Vault'a bağlı launchpad (izinsiz proje açılışı) ve MON köprüsü; eski dağıtımlarda yok.
+    pub launchpad: Option<ILaunchPad::ILaunchPadInstance<DynProvider>>,
+    pub gateway: Option<IMonGateway::IMonGatewayInstance<DynProvider>>,
     send_lock: Mutex<()>,
 }
 
@@ -153,6 +172,14 @@ impl Chain {
         let registry = IEnclaveRegistry::new(v.registry().call().await?, provider.clone());
         let genesis_time = u64::try_from(v.genesisTime().call().await?)?;
         let window_seconds = u64::try_from(v.windowSeconds().call().await?)?;
+        let launchpad = match v.launchpad().call().await {
+            Ok(a) if a != Address::ZERO => Some(ILaunchPad::new(a, provider.clone())),
+            _ => None,
+        };
+        let gateway = match &launchpad {
+            Some(l) => Some(IMonGateway::new(l.gateway().call().await.context("launchpad.gateway")?, provider.clone())),
+            None => None,
+        };
         Ok(Self {
             provider,
             vault: v,
@@ -163,6 +190,8 @@ impl Chain {
             fee_bps: u16::try_from(fee).map_err(|_| anyhow!("fee_bps out of range"))?,
             genesis_time,
             window_seconds,
+            launchpad,
+            gateway,
             send_lock: Mutex::new(()),
         })
     }

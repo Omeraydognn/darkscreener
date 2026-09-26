@@ -31,3 +31,4 @@ seed.bin
 .DS_Store
 .dev/
 .testnet/
+.vercel

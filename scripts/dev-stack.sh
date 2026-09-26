@@ -34,11 +34,11 @@ new_key() { cast wallet new --json | jq -r '.[0].private_key'; }
 fund() { cast rpc --rpc-url $RPC anvil_setBalance "$(cast wallet address "$1")" 0x3635C9ADC5DEA00000 >/dev/null; }
 DEPLOYER_KEY=$(new_key); RELAYER_KEY=$(new_key)
 TRADERS=(); for _ in 1 2 3 4; do TRADERS+=("$(new_key)"); done
-SIGNERS=(); for _ in 1 2 3; do SIGNERS+=("$(new_key)"); done
+SIGNERS=(); for _ in 1 2 3 4; do SIGNERS+=("$(new_key)"); done
 for k in "$DEPLOYER_KEY" "$RELAYER_KEY" "${TRADERS[@]}"; do fund "$k"; done
 jq -n --argjson t "$(printf '%s\n' "${TRADERS[@]}" | jq -R . | jq -s .)" \
-      --argjson s "$(printf '%s\n' "${SIGNERS[@]}" | jq -R . | jq -s .)" \
-      '{traders: $t, newsSigners: $s}' > "$DEV/keys.json"
+      --argjson s "$(printf '%s\n' "${SIGNERS[@]}" | jq -R . | jq -s .)" --arg d "$DEPLOYER_KEY" \
+      '{deployer: $d, traders: $t, newsSigners: $s}' > "$DEV/keys.json"
 chmod 600 "$DEV/keys.json"
 
 echo "==> enclave (local, saat = zincir)"
@@ -60,11 +60,10 @@ cd "$ROOT"
 SETUP=$ROOT/contracts/deployments/$CHAIN_ID-setup.json
 
 addr() { cast wallet address "$1"; }
-jq -n --arg s1 "$(addr "${SIGNERS[0]}")" --arg s2 "$(addr "${SIGNERS[1]}")" --arg s3 "$(addr "${SIGNERS[2]}")" '{
-  "1": {name: "Nebula Compute", symbol: "NEBC", description: "Merkeziyetsiz GPU hesaplama pazarı (kurgusal test projesi).", website: "https://example.com/nebula", twitter: "", newsSigners: [$s1]},
-  "2": {name: "Orbit Relay", symbol: "ORBR", description: "Zincirler arası mesaj taşıma ağı (kurgusal test projesi).", website: "https://example.com/orbit", twitter: "", newsSigners: [$s2]},
-  "3": {name: "Vela Storage", symbol: "VELS", description: "Şifreli dağıtık depolama (kurgusal test projesi).", website: "https://example.com/vela", twitter: "", newsSigners: [$s3]}
-}' > "$DEV/projects.json"
+PROJECTS_TEMPLATE=$ROOT/scripts/projects.template.json
+jq --arg s1 "$(addr "${SIGNERS[0]}")" --arg s2 "$(addr "${SIGNERS[1]}")" --arg s3 "$(addr "${SIGNERS[2]}")" --arg s4 "$(addr "${SIGNERS[3]}")" \
+  '."1".newsSigners=[$s1] | ."2".newsSigners=[$s2] | ."3".newsSigners=[$s3] | ."4".newsSigners=[$s4]' \
+  "$PROJECTS_TEMPLATE" > "$DEV/projects.json"
 : > "$DEV/news.jsonl"
 
 echo "==> relayer"

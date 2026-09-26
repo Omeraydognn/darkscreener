@@ -1,22 +1,3 @@
-<!--
-ai_context:
-  project: darkscreener
-  category: privacy DEX / dark pool
-  chain: Monad Testnet (chainId 10143, EVM Cancun)
-  stack: [Rust (tee-core, tee-attest, tee-server, relayer), Solidity 0.8.30 (Foundry), Circom 2.2.3 + Groth16 (snarkjs), Next.js 16 + React 19, viem, drand quicknet timelock]
-  entrypoints:
-    contracts: contracts/src/DarkVault.sol
-    circuit: circuits/src/spend.circom
-    enclave: tee-server/src/main.rs -> tee-core/src/batch.rs::process_batch
-    relayer: relayer/src/main.rs
-    frontend: frontend/app/p/[poolId]/page.tsx -> frontend/components/Terminal.tsx
-    client_crypto: sdk/src/{ecies,order,note,relayer}.mjs
-  invariants:
-    - Byte formats are identical across Rust (tee-core), Solidity (DarkPoolLib), Circom and JS (sdk); verified by contracts/test/fixtures/e2e.json
-    - Trade results are time-locked for 7 days with drand; nobody (including the enclave) can open them early
-    - The enclave is stateless; vault state is sealed and stored on-chain as a hash chain
-  status: all phases implemented and tested locally; Monad testnet deploy scripted (scripts/testnet.sh); enclave runs TEE_PROVIDER=local until Oyster CVM deploy
--->
 
 > **AI Context:** `darkscreener` Monad testnet üzerinde çalışan, **fiyatı ve işlemleri gizleyen bir dark pool DEX**'tir. Emirler tarayıcıda şifrelenir ve ZK kanıtıyla (Groth16, `spend.circom`) shielded not havuzundan harcanır. Relayer gönderir, TEE enclave batch halinde FM-AMM ile eşleştirir, `DarkVault.settleBatch` enclave imzasını doğrular. Sonuçlar **7 gün boyunca drand zaman kilidindedir**. Kullanıcılar canlı fiyat yerine proje haberlerini ve 7 gün gecikmeli "ghost chart"ı görür. Kod dilleri: Rust, Solidity, Circom, TypeScript. Ana dizinler: `tee-core/`, `contracts/`, `circuits/`, `relayer/`, `sdk/`, `frontend/`.
 
@@ -263,16 +244,12 @@ Script'ler bu değişkenleri kendisi yazar (`frontend/.env.local`, `.dev/relayer
 
 ---
 
-## 🎥 Demo ve Test
+## 🎥 MVP
 
 | | Bağlantı |
 |---|---|
-| 🎬 Demo videosu | `[DEMO_VIDEO_LINKI]` |
 | 🌐 Canlı uygulama | `[CANLI_LINK]` |
-| 📜 `DarkVault` (Monad testnet) | `[VAULT_ADRESI]` → `https://testnet.monadexplorer.com/address/[VAULT_ADRESI]` |
-| 🔐 `OwnerEnclaveRegistry` | `[REGISTRY_ADRESI]` |
-| ✅ `SpendVerifier` (Groth16) | `[VERIFIER_ADRESI]` |
-| 🧾 Enclave attestation | `[ENCLAVE_URL]/attestation` |
+
 
 Deploy sonrasında tüm adresler `contracts/deployments/10143.json` dosyasına yazılır.
 

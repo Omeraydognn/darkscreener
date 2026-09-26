@@ -142,6 +142,8 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
     mapping(uint32 => Pool) public pools;
     mapping(address => uint32) public poolOfBaseToken;
     mapping(address => uint128) public minDeposit; // 0 = izin verilmeyen token
+    /// @notice İzinsiz proje açılışını yapan launchpad kontratı (0 = kapalı).
+    address public launchpad;
     mapping(uint64 => Batch) public batches; // settlement sırası -> batch
     mapping(uint32 => Reserves) public finalReserves; // yalnızca kaçış modunda doldurulur
     bool public finalReservesRevealed;
@@ -182,6 +184,7 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
     event FinalReservesRevealed(uint64 indexed batchId, uint256 poolCount);
     event LiquidityWithdrawn(uint32 indexed poolId, address indexed to, uint128 base, uint128 quote);
     event MinDepositSet(address indexed token, uint128 amount);
+    event LaunchpadSet(address indexed launchpad);
 
     // ------------------------------------------------------------------ hatalar
 
@@ -305,6 +308,37 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
         live
         nonReentrant
     {
+        _createPool(msg.sender, poolId, baseToken, base, quote, minBaseDeposit);
+    }
+
+    /// @notice Yetkili launchpad üzerinden izinsiz proje listeleme. Likidite launchpad'den çekilir;
+    ///         kaçış modunda başlangıç likiditesi `creator`'a (projeyi açan kullanıcıya) döner.
+    function createPoolFor(
+        address creator,
+        uint32 poolId,
+        address baseToken,
+        uint128 base,
+        uint128 quote,
+        uint128 minBaseDeposit
+    ) external live nonReentrant {
+        if (msg.sender != launchpad || launchpad == address(0)) revert NotOwner();
+        if (creator == address(0)) revert BadPool();
+        _createPool(creator, poolId, baseToken, base, quote, minBaseDeposit);
+    }
+
+    function setLaunchpad(address launchpad_) external onlyOwner {
+        launchpad = launchpad_;
+        emit LaunchpadSet(launchpad_);
+    }
+
+    function _createPool(
+        address creator,
+        uint32 poolId,
+        address baseToken,
+        uint128 base,
+        uint128 quote,
+        uint128 minBaseDeposit
+    ) internal {
         if (
             poolId == 0 || pools[poolId].baseToken != address(0) || baseToken == address(0) || baseToken == quoteToken
                 || poolOfBaseToken[baseToken] != 0 || base == 0 || quote == 0 || minBaseDeposit == 0
@@ -320,7 +354,7 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
 
         pools[poolId] = Pool({
             baseToken: baseToken,
-            creator: msg.sender,
+            creator: creator,
             window: window,
             reclaimed: false,
             initBase: base,
