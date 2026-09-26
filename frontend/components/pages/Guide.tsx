@@ -6,7 +6,7 @@ const STEPS = [
   { icon: Newspaper, title: "Projeyi araştır", body: "Canlı fiyat yok. Karar verirken projenin anlattıklarına ve kayıtlı anahtarıyla imzaladığı haberlere bakarsın. Fiyat geçmişi yalnızca 7 gün gecikmeli görünür." },
   { icon: EyeOff, title: "Gizli al", body: "Yalnızca dolar tutarını girersin. Emrin tarayıcında şifrelenir, sıfır bilgi kanıtıyla relayer üzerinden gönderilir. Zincirde ne tutar, ne yön, ne de proje görünür." },
   { icon: Clock3, title: "7 gün bekle", body: "Aynı penceredeki tüm emirler enclave'de tek fiyattan eşleşir. Sonuç drand zaman kilidiyle 7 gün kilitlenir; kimse, enclave bile erken açamaz. Sonra kaç token aldığını görürsün." },
-  { icon: LockKeyhole, title: "Gizli sat", body: "Satarken miktar değil yüzde seçersin (%25, %50, %75, %100 ya da başka). Satış geliri de 7 gün sonra açılır ve nakit bakiyene eklenir." },
+  { icon: LockKeyhole, title: "Gizli sat", body: "Satarken miktar değil yüzde seçersin (%25, %50, %75, %100 ya da başka). Kilidi açılmamış alımını da satabilirsin: miktarını bilmesen de seçtiğin yüzdesi enclave içinde satılır. Satış geliri ve satılmayan kısım (kalan lot) 7 gün sonra açılır." },
   { icon: ArrowUpFromLine, title: "Gazsız çek", body: "Nakit bakiyeni istediğin adrese MON (ya da dUSD) olarak çekersin. Gazı relayer öder; alıcı adres, yatırma adresinle ilişkilendirilemez." },
 ];
 

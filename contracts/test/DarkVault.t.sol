@@ -8,6 +8,7 @@ import {ISpendVerifier} from "../src/interfaces/ISpendVerifier.sol";
 import {Groth16Verifier} from "../src/verifier/SpendVerifier.sol";
 import {DrandQuicknet} from "../src/lib/DrandQuicknet.sol";
 import {NoteLib} from "../src/lib/NoteLib.sol";
+import {DarkPoolLib} from "../src/lib/DarkPoolLib.sol";
 import {TestToken, FeeOnTransferToken} from "./utils/TestTokens.sol";
 
 /// @notice Rust enclave + Circom kanıtlarıyla (test/fixtures/e2e.json) uçtan uca shielded test.
@@ -669,6 +670,288 @@ contract DarkVaultTest is Test {
         g = gasleft();
         vault.withdraw(wsp, token, amount, blinding, to);
         console2.log("withdraw (Groth16 + ekleme)", g - gasleft());
+    }
+
+    // ================================================================ kilitli lot satışı
+    //
+    // Lot = batch 2'nin ilk dolu sonucu (alım). Lot satışı batch'lerini enclave'in yerine ikinci bir
+    // kayıtlı test anahtarı imzalar: kontrat sonuç gövdelerini değil, imzalı özeti doğrular.
+
+    uint256 constant LOT_ENCLAVE_PK = 0xA11CE;
+
+    function _lot() internal view returns (bytes32) {
+        return vm.parseJsonBytes32(fx, string.concat(_result(0), ".orderId"));
+    }
+
+    /// @dev 190 baytlık, 0x01 ile başlayan (ECIES sürümü) ayırt edilebilir sahte şifreli metin.
+    function _lotCt(uint256 salt) internal pure returns (bytes memory) {
+        return bytes.concat(bytes1(0x01), abi.encode(salt, salt + 1, salt + 2, salt + 3, salt + 4), new bytes(29));
+    }
+
+    function _lotEnclave() internal {
+        vm.prank(owner);
+        registry.register(vm.addr(LOT_ENCLAVE_PK), bytes32(0));
+    }
+
+    function _filled(bytes32 id, uint256 commitment) internal pure returns (DarkVault.Result memory) {
+        return DarkVault.Result({orderId: id, status: 1, commitment: bytes32(commitment), sealedResult: "sealed"});
+    }
+
+    function _refunded(bytes32 id) internal pure returns (DarkVault.Result memory) {
+        return DarkVault.Result({orderId: id, status: 2, commitment: bytes32(0), sealedResult: ""});
+    }
+
+    function _one(DarkVault.Result memory r) internal pure returns (DarkVault.Result[] memory rs) {
+        rs = new DarkVault.Result[](1);
+        rs[0] = r;
+    }
+
+    function _oneLot(bytes32 sellId, bool filled, uint256 remainder)
+        internal
+        pure
+        returns (DarkVault.LotUpdate[] memory lots)
+    {
+        lots = new DarkVault.LotUpdate[](1);
+        lots[0] = DarkVault.LotUpdate({
+            sellOrderId: sellId,
+            filled: filled,
+            remainderCommitment: bytes32(remainder),
+            sealedRemainder: filled ? bytes("remainder") : bytes("")
+        });
+    }
+
+    /// @dev Enclave'in yapacağı gibi imzalı settlement parametreleri (girdi kontratın kendi kayıtlarından).
+    function _signedParams(uint64 window, DarkVault.Result[] memory rs, DarkVault.LotUpdate[] memory lots)
+        internal
+        view
+        returns (DarkVault.SettleParams memory p)
+    {
+        p = DarkVault.SettleParams({
+            window: window,
+            unlockRound: uint64(DrandQuicknet.roundAt(block.timestamp + 7 days) + 1),
+            newSealedState: abi.encodePacked("state", window),
+            capsule: abi.encodePacked("capsule", window),
+            sealedSummary: abi.encodePacked("summary", window),
+            reservesCommitment: keccak256(abi.encode(window)),
+            signature: ""
+        });
+        bytes32[] memory leaves = new bytes32[](rs.length);
+        for (uint256 i = 0; i < rs.length; ++i) {
+            leaves[i] =
+                DarkPoolLib.resultLeaf(rs[i].orderId, rs[i].status, rs[i].commitment, keccak256(rs[i].sealedResult));
+        }
+        bytes32 lotsHash;
+        for (uint256 i = 0; i < lots.length; ++i) {
+            lotsHash = DarkPoolLib.lotChainStep(
+                lotsHash,
+                lots[i].sellOrderId,
+                lots[i].filled,
+                lots[i].remainderCommitment,
+                keccak256(lots[i].sealedRemainder)
+            );
+        }
+        (, bytes32 poolsChain) = vault.windowPools(window);
+        bytes32 digest = DarkPoolLib.settlementDigest(
+            DarkPoolLib.Settlement({
+                chainId: block.chainid,
+                vault: address(vault),
+                batchId: vault.settledCount() + 1,
+                prevStateHash: vault.stateHash(),
+                newStateHash: keccak256(p.newSealedState),
+                resultsRoot: DarkPoolLib.merkleRoot(leaves),
+                unlockRound: p.unlockRound,
+                capsuleHash: keccak256(p.capsule),
+                summaryHash: keccak256(p.sealedSummary),
+                quoteToken: vault.quoteToken(),
+                feeBps: vault.feeBps(),
+                ordersHash: vault.ordersHash(window),
+                poolsHash: poolsChain,
+                reservesCommitment: p.reservesCommitment,
+                lotsHash: lotsHash
+            })
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(LOT_ENCLAVE_PK, digest);
+        p.signature = abi.encodePacked(r, s, v);
+    }
+
+    function _settleSigned(uint64 window, DarkVault.Result[] memory rs, DarkVault.LotUpdate[] memory lots)
+        internal
+        returns (uint64 batchId)
+    {
+        vault.settleBatch(_signedParams(window, rs, lots), rs, lots);
+        batchId = vault.settledCount();
+    }
+
+    function _unlockOf(uint64 batchId) internal view returns (uint64 t) {
+        (,, t,) = vault.batches(batchId);
+    }
+
+    /// @dev Satış emrinin (tek sonuçlu batch: kanıt boş) claim'i.
+    function _claimSell(uint64 batchId, bytes32 sellId, uint256 proceeds) internal {
+        vault.claimNote(batchId, sellId, proceeds, keccak256("sealed"), new bytes32[](0));
+    }
+
+    /// @dev Batch 2 settle edilir, lot (alım sonucu) %50 satılır: pencere 3.
+    function _sellLot() internal returns (bytes32 sellId) {
+        _throughSettle2();
+        _lotEnclave();
+        vm.warp(GENESIS + 125);
+        vm.expectEmit(address(vault));
+        emit DarkVault.LotSellSubmitted(keccak256(_lotCt(1)), _lot());
+        sellId = vault.submitLotSell(_lotCt(1), _lot());
+    }
+
+    function test_lotSell_lockedLotSoldByPercentage_claimsProceedsAndRemainder() public {
+        bytes32 sellId = _sellLot();
+        assertEq(sellId, keccak256(_lotCt(1)));
+        assertEq(vault.lotState(_lot()), 1);
+        (bytes32 lot, uint64 window, bool settled) = vault.lotSells(sellId);
+        assertEq(lot, _lot());
+        assertEq(window, 3);
+        assertFalse(settled);
+        (, bool done, uint256 sc) = vault.orders(sellId);
+        assertFalse(done);
+        assertEq(sc, uint256(_lot()), "emir zinciri lot kimligini tasir");
+
+        // Ayni lot ikinci kez satilamaz
+        vm.expectRevert(DarkVault.LotUnavailable.selector);
+        vault.submitLotSell(_lotCt(2), _lot());
+
+        // Satis beklerken lotun kilidi acilsa bile claim edilemez
+        vm.warp(UNLOCK);
+        vm.expectRevert(DarkVault.LotUnavailable.selector);
+        _claim(0);
+
+        // Lot guncellemesi eksik ya da imzasiz degistirilmis settlement reddedilir
+        DarkVault.Result[] memory rs = _one(_filled(sellId, 111));
+        DarkVault.LotUpdate[] memory lots = _oneLot(sellId, true, 222);
+        DarkVault.SettleParams memory p = _signedParams(3, rs, lots);
+        vm.expectRevert(DarkVault.LotMismatch.selector);
+        vault.settleBatch(p, rs, _noLots());
+        lots[0].remainderCommitment = bytes32(uint256(333));
+        vm.expectRevert(DarkVault.InvalidSigner.selector);
+        vault.settleBatch(p, rs, lots);
+        lots[0].remainderCommitment = bytes32(uint256(222));
+
+        vm.expectEmit(address(vault));
+        emit DarkVault.BatchLots(3, lots);
+        vault.settleBatch(p, rs, lots);
+        assertEq(vault.lotState(_lot()), 2, "lot tuketildi");
+        assertEq(vault.remainders(sellId), 222);
+        (,, settled) = vault.lotSells(sellId);
+        assertTrue(settled);
+
+        // Satilmis lotun claim'i agaca not eklemez (karsiligi satis emrinin notlari)
+        uint32 count = vault.noteCount();
+        _claim(0);
+        assertEq(vault.noteCount(), count, "satilan lot not eklemez");
+        (, done,) = vault.orders(_lot());
+        assertTrue(done);
+
+        // Satis emri kilitli; acilinca gelir + kalan lot notlari agaca girer
+        vm.expectRevert(DarkVault.Locked.selector);
+        _claimSell(3, sellId, 111);
+        vm.warp(_unlockOf(3));
+        vm.expectEmit(address(vault));
+        emit DarkVault.NoteInserted(111, count);
+        vm.expectEmit(address(vault));
+        emit DarkVault.NoteInserted(222, count + 1);
+        _claimSell(3, sellId, 111);
+        assertEq(vault.noteCount(), count + 2);
+
+        // Lot satisi not harcamaz: iade yolu yoktur
+        vm.expectRevert(DarkVault.LotMismatch.selector);
+        vault.returnRefunded(3, sellId, new bytes32[](0));
+    }
+
+    function test_lotSell_rejectedSaleFreesLot() public {
+        bytes32 sellId = _sellLot();
+        vm.warp(GENESIS + 181);
+        _settleSigned(3, _one(_refunded(sellId)), _oneLot(sellId, false, 0));
+        assertEq(vault.lotState(_lot()), 0, "lot serbest");
+        assertEq(vault.remainders(sellId), 0);
+
+        // Reddedilen satisin iadesi yok (not harcanmadi)
+        vm.expectRevert(DarkVault.LotMismatch.selector);
+        vault.returnRefunded(3, sellId, new bytes32[](0));
+
+        // Serbest kalan lot yeniden satilabilir ya da kilit acilinca normal claim edilir
+        vm.warp(GENESIS + 185);
+        vault.submitLotSell(_lotCt(7), _lot());
+        assertEq(vault.lotState(_lot()), 1);
+    }
+
+    function test_lotSell_rejectedLotClaimsNormally() public {
+        bytes32 sellId = _sellLot();
+        vm.warp(GENESIS + 181);
+        _settleSigned(3, _one(_refunded(sellId)), _oneLot(sellId, false, 0));
+        vm.warp(UNLOCK);
+        uint32 count = vault.noteCount();
+        _claim(0);
+        assertEq(vault.noteCount(), count + 1, "alim notu agaca girer");
+        // Claim edilmis lot artik satilamaz
+        vm.expectRevert(DarkVault.LotUnavailable.selector);
+        vault.submitLotSell(_lotCt(8), _lot());
+    }
+
+    function test_lotSell_remainderCanBeSoldAgain() public {
+        bytes32 sell1 = _sellLot();
+        vm.warp(GENESIS + 181);
+        uint64 b3 = _settleSigned(3, _one(_filled(sell1, 111)), _oneLot(sell1, true, 222));
+
+        // Kalan lot (satis emrinin sonucu) settle edilince yeniden yuzdeyle satilabilir: %100
+        vm.warp(GENESIS + 185);
+        bytes32 sell2 = vault.submitLotSell(_lotCt(9), sell1);
+        assertEq(vault.lotState(sell1), 1);
+        vm.warp(GENESIS + 241);
+        uint64 b4 = _settleSigned(4, _one(_filled(sell2, 333)), _oneLot(sell2, true, 444));
+        assertEq(vault.lotState(sell1), 2);
+
+        // Ilk satisin claim'i: gelir girer, satilan kalan lot girmez
+        vm.warp(_unlockOf(b3));
+        uint32 count = vault.noteCount();
+        _claimSell(b3, sell1, 111);
+        assertEq(vault.noteCount(), count + 1);
+        vm.warp(_unlockOf(b4));
+        _claimSell(b4, sell2, 333);
+        assertEq(vault.noteCount(), count + 3, "ikinci satis: gelir + kalan");
+    }
+
+    function test_lotSell_rejectsUnavailableLots() public {
+        _throughSettle2();
+        vm.warp(GENESIS + 125);
+        // Bilinmeyen emir
+        vm.expectRevert(DarkVault.LotUnavailable.selector);
+        vault.submitLotSell(_lotCt(1), keccak256("unknown"));
+        // Henuz settle edilmemis emir (bu pencerede gonderilen lot satisi)
+        bytes32 sell1 = vault.submitLotSell(_lotCt(1), _lot());
+        vm.expectRevert(DarkVault.LotUnavailable.selector);
+        vault.submitLotSell(_lotCt(2), sell1);
+        // Sonucu alinmis (done) emir: iade edilmis emir
+        _returnRefunded();
+        bytes32 refundedId = vm.parseJsonBytes32(fx, string.concat(_result(3), ".orderId"));
+        vm.expectRevert(DarkVault.LotUnavailable.selector);
+        vault.submitLotSell(_lotCt(3), refundedId);
+        // Bicimsiz sifreli metin ve tekrar eden emir
+        vm.expectRevert(DarkVault.BadCiphertext.selector);
+        vault.submitLotSell(new bytes(190), _lot());
+        vm.expectRevert(DarkVault.DuplicateOrder.selector);
+        vault.submitLotSell(_lotCt(1), _lot());
+    }
+
+    function test_lotSell_escapeFreesLot() public {
+        bytes32 sellId = _sellLot();
+        vm.warp(GENESIS + 180 + 2 days);
+        vault.activateEscape();
+        vault.escapeReturnOrder(sellId);
+        assertEq(vault.lotState(_lot()), 0, "kacis: lot serbest");
+        (, bool done,) = vault.orders(sellId);
+        assertTrue(done);
+        // Lotun kendisi kilit acilinca claim edilir
+        vm.warp(UNLOCK);
+        uint32 count = vault.noteCount();
+        _claim(0);
+        assertEq(vault.noteCount(), count + 1);
     }
 
     // ================================================================ kütüphaneler

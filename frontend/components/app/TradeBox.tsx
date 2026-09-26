@@ -26,8 +26,10 @@ export function TradeBox({ pool }: { pool: Pool | undefined }) {
 
   const pos = wallet && book && pool ? positions(wallet, book, [pool])[0] : undefined;
   const held = pos?.held ?? 0n;
+  // Kilidi açılmamış alımlar da (miktarı bilinmeden) yüzdeyle satılabilir: "kilitli lot"
   const lots = wallet && book && pool ? wallet.sellableLots(book, pool.poolId) : [];
-  const pending = wallet && book && pool ? wallet.pendingLots(book, pool.poolId) : { settling: 0, selling: 0 };
+  const unsettled = wallet && book && pool ? wallet.unsettledBuys(book, pool.poolId).length : 0;
+  const lotsOnSale = book && pool ? book.orders.some((o) => o.poolId === pool.poolId && o.lotSale?.state === "pending") : false;
   const canSell = held > 0n || lots.length > 0;
 
   let buyRaw = 0n;
@@ -68,7 +70,6 @@ export function TradeBox({ pool }: { pool: Pool | undefined }) {
         {wallet === undefined ? <p className="text-center text-muted">Hesap yükleniyor…</p> : <AccountSetup compact />}
       </div>
     );
-
 
   return (
     <div className="trade-preview grid gap-4">
@@ -127,8 +128,11 @@ export function TradeBox({ pool }: { pool: Pool | undefined }) {
             e.preventDefault();
             if (!pool || !info) return;
             run("Hazırlanıyor", async (step) => {
+              const n = lots.length;
               await wallet.sell(info, pool, sellPct, step);
-              return `%${sellPct} gizli satış gönderildi. Satış gelirini 7 gün sonra göreceksin.${lots.length ? " Kilitli alımların da bu yüzdeyle satıldı; miktarı enclave hesaplar." : ""}`;
+              return n
+                ? `%${sellPct} gizli satış gönderildi (${n} kilitli lot dahil). Satış gelirini ve kalan lotu 7 gün sonra göreceksin.`
+                : `%${sellPct} gizli satış gönderildi. Satış gelirini 7 gün sonra göreceksin.`;
             });
           }}
         >
@@ -152,19 +156,20 @@ export function TradeBox({ pool }: { pool: Pool | undefined }) {
           </div>
           <div className="trade-details">
             <p><span>Satılacak miktar</span><strong><Lock size={12} /> Gösterilmez</strong></p>
+            {lots.length > 0 && (
+              <p title="Kilidi açılmamış alımların: miktarlarını sen de bilmiyorsun; aynı yüzdeleri enclave içinde satılır.">
+                <span>Kilitli lotlar</span><strong><Lock size={12} /> {lots.length} lot · miktar gizli</strong>
+              </p>
+            )}
             <p><span>Satış geliri</span><strong><Clock3 size={12} /> 7 gün sonra</strong></p>
+            {lots.length > 0 && <p><span>Kalan lot</span><strong><Clock3 size={12} /> 7 gün sonra</strong></p>}
           </div>
-          {lots.length > 0 && (
-            <p className="text-xs text-muted">
-              Kilidi açılmamış alımların da bu yüzdeyle satılır. Miktarı sen de bilmezsin; enclave hesaplar ve satış gelirini 7 gün sonra görürsün.
-            </p>
-          )}
           {!canSell ? (
             <p className="rounded-md border border-dashed border-line p-3 text-center text-xs text-muted">
-              {pending.settling
-                ? "Alımın işleme alınıyor; pencere kapanıp işlenince (birkaç dakika) kilitliyken de satabilirsin."
-                : pending.selling
-                  ? "Önceki satış emrin işleniyor; işlenince kalan kısmı yeniden satabilirsin."
+              {unsettled
+                ? "Alımın settle ediliyor; birkaç dakika içinde kilitli haliyle (miktarını bilmeden) satabilirsin."
+                : lotsOnSale
+                  ? `Kilitli lotun satışta; satış settle edilince kalan kısmını satabilirsin.`
                   : `Satılabilir ${pool?.base.symbol ?? "token"} yok. Önce gizli alım yap.`}
             </p>
           ) : (
@@ -181,7 +186,17 @@ export function TradeBox({ pool }: { pool: Pool | undefined }) {
         <div className="position-mini">
           <p className="mini-eyebrow">BU PROJEDEKİ POZİSYONUN</p>
           <p><span>Yatırılan</span><strong className="num">{fmtUsd(pos.invested)}</strong></p>
-          <p><span>{pool?.base.symbol}</span><strong className="num">{pos.lockedBuys ? `Bilinmiyor · ${pos.nextBuyUnlock ? duration(pos.nextBuyUnlock - now) : "kilitli"}` : fmtToken(pos.held, pool?.base.decimals ?? 18)}</strong></p>
+          <p><span>{pool?.base.symbol}</span><strong className="num">{pos.lockedLots ? `Bilinmiyor · ${pos.nextLotUnlock ? duration(pos.nextLotUnlock - now) : "kilitli"}` : fmtToken(pos.held, pool?.base.decimals ?? 18)}</strong></p>
+          {pos.lotSells > 0 && (
+            <p>
+              <span>Satılan lot</span>
+              <strong className="num">
+                {pos.soldUnknown ? "Bilinmiyor" : fmtToken(pos.sold, pool?.base.decimals ?? 18)}
+                {" · kalan "}
+                {pos.soldUnknown ? "kilitli" : fmtToken(pos.remainder, pool?.base.decimals ?? 18)}
+              </strong>
+            </p>
+          )}
           {pos.lockedSells > 0 && <p><span>Satış geliri</span><strong>Kilitli · {pos.nextSellUnlock ? duration(pos.nextSellUnlock - now) : "settle bekleniyor"}</strong></p>}
         </div>
       )}
