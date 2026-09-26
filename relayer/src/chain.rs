@@ -89,9 +89,9 @@ sol! {
         error AlreadySettled();
         error NotOwner();
         error InvalidReveal();
+        error NotRevealed();
         error LotUnavailable();
         error LotMismatch();
-        error NotRevealed();
 
         function quoteToken() external view returns (address);
         function genesisTime() external view returns (uint256);
@@ -105,9 +105,10 @@ sol! {
         function ordersHash(uint64 window) external view returns (bytes32);
         function windowPools(uint64 window) external view returns (uint32[] memory ids, bytes32 poolsChain);
         function orders(bytes32 orderId) external view returns (uint64 window, bool done, uint256 spendCommitment);
-        function lotState(bytes32 lot) external view returns (uint8);
-        function lastSettledWindow() external view returns (uint64);
         function batches(uint64 batchId) external view returns (bytes32 resultsRoot, uint64 window, uint64 unlockTime, bytes32 reservesCommitment);
+
+        function lotState(bytes32 lot) external view returns (uint8);
+        function lotSells(bytes32 orderId) external view returns (bytes32 lot, uint64 window, bool settled);
 
         function settleBatch(SettleParams calldata p, Result[] calldata results, LotUpdate[] calldata lots) external;
         function submitLotSell(bytes calldata ciphertext, bytes32 lot) external returns (bytes32 orderId);

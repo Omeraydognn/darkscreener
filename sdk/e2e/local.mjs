@@ -6,8 +6,11 @@
 //  2. 250 USDC ile A tokenı al: emri JS'te enclave anahtarına şifrele, ZK kanıtı üret,
 //     RELAYER üzerinden gönder (zincirde gönderen relayer; kullanıcı adresi görünmez)
 //  3. 5 USDC'lik notla bozuk bir emir gönder -> enclave çözemez -> Refunded
-//  4. Relayer batch'i settle eder; iadeyi hemen, sonucu kilit açılınca otomatik ağaca alır
-//  5. Para üstü (750) ve iade (5) notlarını bakiyesi SIFIR olan yeni adreslere relayer ile çek
+//  4. Relayer batch'i settle eder; iadeyi hemen ağaca alır, alım 7 gün kilitli kalır
+//  5. Kilitli lot satışı (miktar bilinmeden yüzdeyle): yanlış yetkili satış reddedilir ve lot
+//     serbest kalır; %50 satılır (gelir + kalan lot); kalan lot %100 satılır
+//  6. Kilit açılınca relayer satış gelirlerini ve kalan lotu ağaca alır; satılan lotlar not eklemez
+//  7. Para üstü (750) ve iade (5) notlarını bakiyesi SIFIR olan yeni adreslere relayer ile çek
 
 import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -17,13 +20,14 @@ import {
   http,
   parseAbi,
   bytesToHex,
+  hexToBytes,
   defineChain,
   getAddress,
 } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import { noteHelpers, Tree, proveSpend, randomField, shutdown } from "../../circuits/lib/note.mjs";
 import { secp256k1 } from "../src/ecies.mjs";
-import { encryptOrder, orderContext, Side, CIPHERTEXT_LEN } from "../src/order.mjs";
+import { encryptOrder, encryptLotSell, orderContext, Side, CIPHERTEXT_LEN, LOT_MEMO_LEN, SEALED_RESULT_LEN } from "../src/order.mjs";
 import { RelayerClient, proofForRelayer } from "../src/relayer.mjs";
 
 const RPC = process.env.RPC_URL;
@@ -46,6 +50,7 @@ const vaultAbi = parseAbi([
   "function noteRoot() view returns (uint256)",
   "function orders(bytes32) view returns (uint64 window, bool done, uint256 spendCommitment)",
   "function withdrawContext(address) view returns (uint256)",
+  "function lotState(bytes32) view returns (uint8)",
 ]);
 const erc20Abi = parseAbi(["function balanceOf(address) view returns (uint256)"]);
 const gatewayAbi = parseAbi([
@@ -148,19 +153,15 @@ async function main() {
   ok(`emir ${sentBad.orderId.slice(0, 10)}… gönderildi`);
 
   step("relayer pencere kapanınca settle eder");
-  const settled = await until("settlement", async () => {
-    for (let id = 1; ; id++) {
-      try {
-        const b = await relayer.batch(id);
-        const r = b.results.find((x) => x.orderId.toLowerCase() === sentBuy.orderId.toLowerCase());
-        if (r) return { b, buy: r, bad: b.results.find((x) => x.orderId.toLowerCase() === sentBad.orderId.toLowerCase()) };
-      } catch {
-        return null;
-      }
-    }
-  });
+  // İki emir farklı pencerelere düşebilir: her birinin sonucunu ayrı bekle.
+  const settledOrder = (id) =>
+    until(`settlement of ${id.slice(0, 10)}`, async () => {
+      const s = await relayer.order(id).catch(() => null);
+      return s?.batchId ? s : null;
+    });
+  const settled = { buy: await settledOrder(sentBuy.orderId), bad: await settledOrder(sentBad.orderId) };
   assert(settled.buy.status === 1 && settled.bad.status === 2, "statuses");
-  ok(`batch #${settled.b.batchId}: alım Filled, bozuk emir Refunded; kilit açılışı unix ${settled.b.unlockTime}`);
+  ok(`batch #${settled.buy.batchId}: alım Filled, bozuk emir Refunded (batch #${settled.bad.batchId}); kilit açılışı unix ${settled.buy.unlockTime}`);
 
   const orderDone = async (id) =>
     (await pub.readContract({ address: VAULT, abi: vaultAbi, functionName: "orders", args: [id] }))[1];
@@ -169,11 +170,71 @@ async function main() {
   assert(!(await orderDone(sentBuy.orderId)), "result must stay locked for 7 days");
   ok("sonuç notu 7 gün kilitli");
 
-  step("zamanı 8 gün ileri al (anvil) -> relayer sonucu otomatik alır");
+  assert(hexToBytes(settled.buy.sealedResult).length === SEALED_RESULT_LEN + LOT_MEMO_LEN, "buy result carries the enclave lot memo");
+
+  // ---------------------------------------------------------------- kilitli lot satışı
+  const lotState = (id) => pub.readContract({ address: VAULT, abi: vaultAbi, functionName: "lotState", args: [id] });
+  const lotSell = async (lot, pctBps, auth) => {
+    const ct = await encryptLotSell(info.enclavePub, deploy.chainId, VAULT, { poolId: 1, pctBps, lotOrderId: lot, auth });
+    const res = await relayer.submitLotSell(bytesToHex(ct), lot);
+    const tx = await pub.getTransaction({ hash: res.txHash });
+    assert(getAddress(tx.from) === getAddress(info.relayer), "lot sell must be sent by relayer");
+    return res.orderId;
+  };
+
+  step("kilitli lot satışı: yanlış yetki (başkası lotu satmaya çalışır) -> reddedilir, lot serbest kalır");
+  const forged = await lotSell(sentBuy.orderId, 10_000, randomField());
+  assert((await lotState(sentBuy.orderId)) === 1, "lot must be pending while the sale waits");
+  const malformed = await relayer.submitLotSell("0x01", sentBuy.orderId).then(() => null, (e) => e);
+  assert(malformed && /400/.test(malformed.message), "relayer rejects malformed lot sell");
+  let dup = null;
+  try {
+    await lotSell(sentBuy.orderId, 5_000, buy.spendBlinding);
+  } catch (e) {
+    dup = e;
+  }
+  assert(dup && /LotUnavailable/.test(dup.message), `pending lot must not be sold twice (${dup?.message})`);
+  const forgedRes = await settledOrder(forged);
+  assert(forgedRes.status === 2 && forgedRes.lot?.toLowerCase() === sentBuy.orderId.toLowerCase(), "forged sale refunded");
+  assert(forgedRes.lotUpdate && forgedRes.lotUpdate.filled === false, "forged sale not filled");
+  assert((await lotState(sentBuy.orderId)) === 0, "lot freed after rejected sale");
+  ok(`sahte satış ${forged.slice(0, 10)}… reddedildi; lot yeniden serbest (not harcanmadı, iade yok)`);
+
+  step("kilitli lot satışı: alımın %50'si (kullanıcı miktarı bilmiyor, enclave lot notundan okur)");
+  const sell1 = await lotSell(sentBuy.orderId, 5_000, buy.spendBlinding);
+  const s1 = await settledOrder(sell1);
+  assert(s1.status === 1, "sale filled");
+  assert(s1.lotUpdate?.filled && BigInt(s1.lotUpdate.remainderCommitment) !== 0n, "remainder note issued");
+  assert(hexToBytes(s1.sealedResult).length === SEALED_RESULT_LEN + LOT_MEMO_LEN, "sale result carries the remainder's lot memo");
+  assert((await lotState(sentBuy.orderId)) === 2, "sold lot consumed");
+  const buyStatus = await relayer.order(sentBuy.orderId);
+  assert(buyStatus.lotSales.map((x) => x.state).join() === "rejected,sold", `lot sales: ${JSON.stringify(buyStatus.lotSales)}`);
+  ok(`satış ${sell1.slice(0, 10)}… batch #${s1.batchId}: gelir notu + kalan lot notu (${s1.lotUpdate.remainderCommitment.slice(0, 10)}…)`);
+
+  step("kalan lot: satış emrinin sonucu yeniden satılabilir (%100)");
+  const sell2 = await lotSell(sell1, 10_000, buy.spendBlinding);
+  const s2 = await settledOrder(sell2);
+  assert(s2.status === 1 && s2.lotUpdate?.filled, "remainder sale filled");
+  assert((await lotState(sell1)) === 2, "remainder lot consumed");
+  ok(`kalan lot ${sell2.slice(0, 10)}… ile satıldı (satılan oran dışarıdan anlaşılmaz: kalan not %100'de de üretilir)`);
+
+  step("zamanı 8 gün ileri al (anvil) -> relayer sonuçları otomatik alır");
   await pub.request({ method: "evm_increaseTime", params: [8 * 24 * 3600] });
   await pub.request({ method: "evm_mine", params: [] });
-  await until("claimNote", () => orderDone(sentBuy.orderId));
-  ok("sonuç notu ağaca eklendi (miktar zincirde görünmüyor)");
+  await until("claimNote (satışlar)", async () => (await orderDone(sell1)) && (await orderDone(sell2)));
+  // İndexer yalnızca kesinleşmiş blokları okur: ağaç zincirle aynı olana kadar bekle.
+  const synced = await until("ağaç güncel", async () => {
+    const s = await syncTree(h);
+    return s.fresh ? s : null;
+  });
+  const leaves = new Set(synced.leaves.map((c) => c.toString()));
+  const has = (c) => leaves.has(BigInt(c).toString());
+  assert(has(s1.commitment) && has(s2.commitment), "sale proceeds in tree");
+  assert(has(s2.lotUpdate.remainderCommitment), "last remainder in tree");
+  assert(!has(s1.lotUpdate.remainderCommitment), "sold remainder must not enter the tree");
+  assert(!has(settled.buy.commitment), "sold buy lot must not enter the tree");
+  assert(!(await orderDone(sentBuy.orderId)), "relayer skips claiming a consumed lot (no gas spent)");
+  ok("satış gelirleri ve son kalan lot ağaçta; satılan lotlar ağaca not eklemedi (miktarlar zincirde görünmüyor)");
 
   step("para üstü (750) ve iade (5) notlarını gazsız, yeni adreslere çek");
   t = await until("ağaç güncel", async () => {

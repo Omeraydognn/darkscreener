@@ -29,6 +29,7 @@ export function Portfolio() {
 
   const pos = book && pools ? positions(wallet, book, pools) : [];
   const lockedCount = pos.reduce((a, p) => a + p.lockedBuys + p.lockedSells, 0);
+  const lotCount = pos.reduce((a, p) => a + p.lockedLots, 0);
   const pool = (id: number) => pools?.find((p) => p.poolId === id);
   const groups = groupOrders(book?.orders ?? []);
 
@@ -60,7 +61,7 @@ export function Portfolio() {
         <div className="summary-card">
           <span>Token pozisyonları</span>
           <strong className="unknown">Bilinmiyor</strong>
-          <small>{pos.length} proje · {lockedCount} kilitli işlem</small>
+          <small>{pos.length} proje · {lockedCount} kilitli işlem{lotCount ? ` · ${lotCount} kilitli lot` : ""}</small>
         </div>
       </div>
 
@@ -96,13 +97,25 @@ export function Portfolio() {
                       </td>
                       <td className="num text-right">{fmtUsd(p.invested)}</td>
                       <td className="num text-right">
-                        {p.lockedBuys ? (
-                          <Unknown label={p.nextBuyUnlock ? `${duration(p.nextBuyUnlock - now)} sonra açılır` : "settle bekleniyor"} extra={p.held > 0n ? `+ ${fmtToken(p.held, dec)}` : undefined} />
+                        {p.lockedLots ? (
+                          <Unknown
+                            label={`${p.lockedLots} kilitli lot · ${p.nextLotUnlock ? `${duration(p.nextLotUnlock - now)} sonra açılır` : "settle bekleniyor"}`}
+                            extra={p.held > 0n ? `+ ${fmtToken(p.held, dec)}` : undefined}
+                          />
                         ) : (
                           `${fmtToken(p.held, dec)} ${pl?.base.symbol ?? ""}`
                         )}
                       </td>
-                      <td className="num text-right">{p.sold > 0n ? `${fmtToken(p.sold, dec)} ${pl?.base.symbol ?? ""}` : "—"}</td>
+                      <td className="num text-right">
+                        {p.soldUnknown ? (
+                          <Unknown label={`${p.lotSells} kilitli lot satışı · kalan kısım kilitli`} extra={p.sold > 0n ? `+ ${fmtToken(p.sold, dec)}` : undefined} />
+                        ) : p.sold > 0n ? (
+                          <span className="inline-flex flex-col items-end">
+                            <span>{fmtToken(p.sold, dec)} {pl?.base.symbol ?? ""}</span>
+                            {p.lotSells > 0 && <small className="text-muted">kalan lot: {fmtToken(p.remainder, dec)} {pl?.base.symbol ?? ""}</small>}
+                          </span>
+                        ) : "—"}
+                      </td>
                       <td className="num text-right">
                         {p.lockedSells ? (
                           <Unknown label={p.nextSellUnlock ? `kilit: ${duration(p.nextSellUnlock - now)}` : "settle bekleniyor"} extra={p.proceeds > 0n ? `+ ${fmtUsd(p.proceeds)}` : undefined} />
@@ -128,7 +141,10 @@ export function Portfolio() {
                   <span className={`tag ${row.g.side === "buy" ? "buy" : "sell"}`}>{row.g.side === "buy" ? "Alım" : "Satış"}</span>
                   <span className="min-w-0 flex-1">
                     <strong>{pool(row.g.poolId)?.project?.name ?? `#${row.g.poolId}`}</strong>
-                    <small className="block text-muted">{dateFmt.format(row.g.createdAt)}</small>
+                    <small className="block text-muted">
+                      {dateFmt.format(row.g.createdAt)}
+                      {row.g.parts.some((p) => p.lot) ? " · kilitli lot satışı" : ""}
+                    </small>
                   </span>
                   <span className="num text-right">
                     {row.g.side === "buy" ? fmtUsd(row.g.amountIn) : row.g.pct ? `%${row.g.pct}` : "—"}
@@ -189,13 +205,20 @@ function merge(groups: Group[], activity: NonNullable<ReturnType<typeof useApp>[
 }
 
 function orderState(g: Group, now: number, sym = "", dec = 18) {
-  if (g.parts.every((p) => p.state === "refunded")) return "iade edildi";
+  // Reddedilen lot satışında lot olduğu gibi kalır (not harcanmadı): "iade" değil
+  if (g.parts.every((p) => p.state === "refunded")) return g.parts.every((p) => p.lot) ? "reddedildi · lot aynen duruyor" : "iade edildi";
+  const soldLocked = g.side === "buy" && g.parts.some((p) => p.lotSale?.state === "sold");
   if (g.parts.every((p) => p.state === "revealed" || p.state === "refunded")) {
     const out = g.parts.reduce((a, p) => a + BigInt(p.result?.amountOut ?? "0"), 0n);
-    return g.side === "buy" ? `${fmtToken(out, dec)} ${sym} alındı` : `${fmtUsd(out)} gelir`;
+    if (g.side === "buy") return `${fmtToken(out, dec)} ${sym} alındı${soldLocked ? " · kilitliyken satıldı" : ""}`;
+    const lots = g.parts.filter((p) => p.lot && p.remainder);
+    const rest = lots.reduce((a, p) => a + BigInt(p.remainder!.amount), 0n);
+    return `${fmtUsd(out)} gelir${lots.length ? ` · kalan lot ${fmtToken(rest, dec)} ${sym}` : ""}`;
   }
+  if (g.parts.some((p) => p.lotSale?.state === "pending")) return "kilitli · satışta";
   const t = g.parts.map((p) => p.unlockTime).filter((x): x is number => !!x).sort((a, b) => a - b)[0];
-  return t ? `kilitli · ${duration(t - now)}` : "settle bekleniyor";
+  const lock = t ? `kilitli · ${duration(t - now)}` : "settle bekleniyor";
+  return soldLocked ? `${lock} · kilitliyken satıldı` : lock;
 }
 
 function AccountBox() {

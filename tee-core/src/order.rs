@@ -198,14 +198,28 @@ mod tests {
         }
     }
 
+    /// sdk/src/order.mjs `encodeLotSell` ile aynı baytlar (sdk/test/crosslang.test.mjs aynı vektörü kullanır).
     #[test]
-    fn lot_sell_matches_js_vector() {
-        // sdk/test/crosslang.test.mjs ile aynı vektör
+    fn lot_sell_matches_js_encoding() {
+        let js = "0301000000041388\
+                  0909090909090909090909090909090909090909090909090909090909090909\
+                  0000000000000000000000000000000000000000000000000000000000001234";
+        let mut b = hex::decode(js).unwrap();
+        b.resize(ORDER_LEN, 0);
         let mut auth = [0u8; 32];
-        auth[31] = 7;
+        auth[30..].copy_from_slice(&[0x12, 0x34]);
         let l = LotSell { pool_id: 4, pct_bps: 5_000, lot_order_id: [9; 32], auth };
-        assert_eq!(hex::encode(l.encode()), "0301000000041388090909090909090909090909090909090909090909090909090909090909090900000000000000000000000000000000000000000000000000000000000000070000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
-        assert_eq!(hex::encode(crate::reveal::remainder_id(&[9; 32])), "4ab812e6bf5cbeed1d99994683f12201e49a1b61734b689a4825dfe4877ba48c");
+        assert_eq!(decode_plain(&b).unwrap(), Plain::LotSell(l.clone()));
+        assert_eq!(l.encode().to_vec(), b);
+    }
+
+    /// Kalan lotun sonuç kimliği JS ile aynı (sdk/src/order.mjs `remainderId`).
+    #[test]
+    fn remainder_id_matches_js() {
+        assert_eq!(
+            hex::encode(crate::reveal::remainder_id(&[0x11; 32])),
+            "47a0bba39e1cbf3d332c03045d37310cca74ba32774eda150ec779fcace59649"
+        );
     }
 
     #[test]
