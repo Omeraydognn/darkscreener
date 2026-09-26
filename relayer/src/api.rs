@@ -11,6 +11,8 @@
 //! | GET  /v1/notes?from=&limit= | not ağacı yaprakları (istemci ağacı buradan kurar) |
 //! | GET  /v1/batches/{id}   | kapsül, özet, sonuçlar (7 gün sonra açmak için) |
 //! | POST /v1/orders         | { ciphertext, proof } → submitShieldedOrder |
+//! | POST /v1/lot-sells      | { ciphertext, lot } → submitLotSell (kilitli lotu yüzdeyle sat) |
+//! | GET  /v1/orders/{id}    | emrin durumu; lot satışıysa kalan lot, lotsa satışları |
 //! | POST /v1/withdrawals    | { proof, token, amount, spendBlinding, recipient } → withdraw |
 //! | GET  /v1/pools          | havuzlar + token bilgisi + proje meta verisi |
 //! | GET  /v1/pools/{id}/history | 7 gün gecikmeli "ghost chart": açılmış batch noktaları + kilitli batch'ler |
@@ -65,6 +67,7 @@ pub fn router(ctx: Arc<AppCtx>) -> Router {
         .route("/v1/batches/{id}", get(batch))
         .route("/v1/orders", post(submit_order))
         .route("/v1/orders/{id}", get(order_status))
+        .route("/v1/lot-sells", post(submit_lot_sell))
         .route("/v1/withdrawals", post(withdraw))
         .route("/v1/pools", get(pools))
         .route("/v1/pools/{id}/history", get(history))
@@ -72,12 +75,21 @@ pub fn router(ctx: Arc<AppCtx>) -> Router {
         .route("/v1/projects", post(register_project))
         // Tarayıcıdaki frontend farklı origin'den çağırır. Kimlik bilgisi (cookie) kullanılmaz.
         // allow_private_network: herkese açık bir siteden (ör. Vercel) yerel relayer'a gelen isteklerin ön kontrolü
-        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any).allow_private_network(true))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any)
+                .allow_private_network(true),
+        )
         .with_state(ctx)
 }
 
 fn now_unix() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------- hata
@@ -111,7 +123,10 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     pub fn new(per_minute: u32) -> Self {
-        Self { per_minute, hits: Mutex::new(HashMap::new()) }
+        Self {
+            per_minute,
+            hits: Mutex::new(HashMap::new()),
+        }
     }
 
     fn check(&self, ip: IpAddr) -> Result<(), ApiError> {
@@ -153,7 +168,10 @@ impl ProofDto {
     pub fn to_call(&self) -> Result<IDarkVault::SpendProof, ApiError> {
         Ok(IDarkVault::SpendProof {
             a: [num(&self.a[0])?, num(&self.a[1])?],
-            b: [[num(&self.b[0][0])?, num(&self.b[0][1])?], [num(&self.b[1][0])?, num(&self.b[1][1])?]],
+            b: [
+                [num(&self.b[0][0])?, num(&self.b[0][1])?],
+                [num(&self.b[1][0])?, num(&self.b[1][1])?],
+            ],
             c: [num(&self.c[0])?, num(&self.c[1])?],
             root: num(&self.root)?,
             nullifier: num(&self.nullifier)?,
@@ -177,18 +195,31 @@ async fn info(State(ctx): State<Arc<AppCtx>>) -> Result<Json<Value>, ApiError> {
         .json()
         .await
         .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e.to_string()))?;
-    let addr = enclave["address"].as_str().and_then(|a| Address::from_str(a).ok());
+    let addr = enclave["address"]
+        .as_str()
+        .and_then(|a| Address::from_str(a).ok());
     let registered = match addr {
-        Some(a) => chain.registry.isEnclave(a).call().await.map_err(anyhow::Error::from)?,
+        Some(a) => chain
+            .registry
+            .isEnclave(a)
+            .call()
+            .await
+            .map_err(anyhow::Error::from)?,
         None => false,
     };
     let gateway = match &chain.gateway {
         Some(g) => {
             let rate = g.usdPerMon().call().await.map_err(anyhow::Error::from)?;
             use alloy::providers::Provider;
-            let balance = chain.provider.get_balance(*g.address()).await.map_err(anyhow::Error::from)?;
+            let balance = chain
+                .provider
+                .get_balance(*g.address())
+                .await
+                .map_err(anyhow::Error::from)?;
             // usdPerMon: 1 MON başına dUSD birimi (6 ondalık); balance: MON çekim likiditesi (wei)
-            Some(json!({ "address": g.address(), "usdPerMon": rate.to_string(), "balance": balance.to_string() }))
+            Some(
+                json!({ "address": g.address(), "usdPerMon": rate.to_string(), "balance": balance.to_string() }),
+            )
         }
         None => None,
     };
@@ -238,9 +269,15 @@ async fn notes(State(ctx): State<Arc<AppCtx>>, Query(q): Query<NotesQuery>) -> J
     }))
 }
 
-async fn batch(State(ctx): State<Arc<AppCtx>>, Path(id): Path<u64>) -> Result<Json<Value>, ApiError> {
+async fn batch(
+    State(ctx): State<Arc<AppCtx>>,
+    Path(id): Path<u64>,
+) -> Result<Json<Value>, ApiError> {
     let st = ctx.index.state.read().await;
-    let b = st.batches.get(&id).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "unknown batch".into()))?;
+    let b = st
+        .batches
+        .get(&id)
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "unknown batch".into()))?;
     Ok(Json(json!({
         "batchId": b.batch_id,
         "window": b.window,
@@ -257,22 +294,71 @@ async fn batch(State(ctx): State<Arc<AppCtx>>, Path(id): Path<u64>) -> Result<Js
             "commitment": r.commitment,
             "sealedResult": r.sealedResult,
         })).collect::<Vec<_>>(),
+        "lots": b.lots.iter().map(lot_json).collect::<Vec<_>>(),
     })))
+}
+
+fn lot_json(l: &IDarkVault::LotUpdate) -> Value {
+    json!({
+        "sellOrderId": l.sellOrderId,
+        "filled": l.filled,
+        "remainderCommitment": l.remainderCommitment,
+        "sealedRemainder": l.sealedRemainder,
+        // Kalan notun sonuç kimliği (dış ve iç katmanın AAD'si)
+        "remainderId": B256::from(dark_tee_core::reveal::remainder_id(&l.sellOrderId.0)),
+    })
+}
+
+/// Bir emrin lot olarak durumu: satış emirleri ve (settle edildiyse) sonuçları.
+fn lot_sales(st: &crate::index::IndexState, id: &B256) -> Vec<Value> {
+    st.sells_of(id)
+        .iter()
+        .map(|sell| {
+            let update = st.lot_update(sell).map(|(_, l)| l);
+            json!({
+                "orderId": sell,
+                // pending: settle bekliyor; sold: satıldı (kalan kısım satış emrinin sonucunda); rejected: lot serbest
+                "state": match update {
+                    None => "pending",
+                    Some(u) if u.filled => "sold",
+                    Some(_) => "rejected",
+                },
+            })
+        })
+        .collect()
 }
 
 /// Kullanıcının kendi emrinin durumu: hangi batch'te, sonucu, kilit ve (açıldıysa) K_b.
 /// Sonucun iç katmanı yalnızca emir sahibinin görüntüleme anahtarıyla açılır.
-async fn order_status(State(ctx): State<Arc<AppCtx>>, Path(id): Path<B256>) -> Result<Json<Value>, ApiError> {
+async fn order_status(
+    State(ctx): State<Arc<AppCtx>>,
+    Path(id): Path<B256>,
+) -> Result<Json<Value>, ApiError> {
     let st = ctx.index.state.read().await;
-    let submitted = st.windows.iter().find_map(|(w, rec)| rec.orders.iter().any(|o| o.order_id == id).then_some(*w));
+    let submitted = st
+        .windows
+        .iter()
+        .find_map(|(w, rec)| rec.orders.iter().any(|o| o.order_id == id).then_some(*w));
     let Some(window) = submitted else {
-        return Err(ApiError(StatusCode::NOT_FOUND, "order not indexed yet".into()));
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "order not indexed yet".into(),
+        ));
     };
+    let lot = st.lot_sells.get(&id).copied();
+    let sales = lot_sales(&st, &id);
     for b in st.batches.values().filter(|b| b.window == window) {
         if let Some((i, r)) = b.results.iter().enumerate().find(|(_, r)| r.orderId == id) {
             let core = b.core_results();
             let leaves: Vec<[u8; 32]> = core.iter().map(|r| r.leaf()).collect();
-            let kb = ctx.revealer.revealed.read().await.get(&b.batch_id).map(|r| format!("0x{}", hex::encode(r.kb)));
+            let kb = ctx
+                .revealer
+                .revealed
+                .read()
+                .await
+                .get(&b.batch_id)
+                .map(|r| format!("0x{}", hex::encode(r.kb)));
+            let remainder = b.lots.iter().find(|l| l.sellOrderId == id).map(lot_json);
             return Ok(Json(json!({
                 "orderId": id,
                 "window": window,
@@ -284,10 +370,18 @@ async fn order_status(State(ctx): State<Arc<AppCtx>>, Path(id): Path<B256>) -> R
                 "unlockTime": b.unlock_time,
                 "kb": kb,
                 "merkleProof": dark_tee_core::batch::merkle_proof(&leaves, i).iter().map(|p| format!("0x{}", hex::encode(p))).collect::<Vec<_>>(),
+                // Kilitli lot satışıysa: satılan lot ve satılmayan kısmın (kalan lot) notu
+                "lot": lot,
+                "lotUpdate": remainder,
+                // Bu emrin sonucu bir lotsa: onu satan emirler
+                "lotSales": sales,
             })));
         }
     }
-    Ok(Json(json!({ "orderId": id, "window": window, "windowEnd": ctx.chain.window_end(window), "batchId": null })))
+    Ok(Json(json!({
+        "orderId": id, "window": window, "windowEnd": ctx.chain.window_end(window), "batchId": null,
+        "lot": lot, "lotSales": sales,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -309,7 +403,41 @@ async fn submit_order(
     let order_id = B256::from(keccak(&req.ciphertext));
     let chain = &ctx.chain;
     let tx = chain
-        .send(&format!("submitShieldedOrder {order_id}"), chain.vault.submitShieldedOrder(req.ciphertext, proof))
+        .send(
+            &format!("submitShieldedOrder {order_id}"),
+            chain.vault.submitShieldedOrder(req.ciphertext, proof),
+        )
+        .await?;
+    Ok(Json(json!({ "orderId": order_id, "txHash": tx })))
+}
+
+#[derive(Deserialize)]
+struct LotSellReq {
+    ciphertext: Bytes,
+    /// Satılan lot: settle edilmiş, kilidi açılmamış bir alımın (ya da önceki lot satışının) emir kimliği
+    lot: B256,
+}
+
+/// Kilitli lot satışı. Kanıt yoktur: sahipliği enclave, şifreli gövdedeki açılışla doğrular
+/// (yanlışsa lot serbest kalır). Kontrat lotu satış settle edilene kadar kilitler.
+async fn submit_lot_sell(
+    State(ctx): State<Arc<AppCtx>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(req): Json<LotSellReq>,
+) -> Result<Json<Value>, ApiError> {
+    ctx.limiter.check(peer.ip())?;
+    if req.ciphertext.len() != dark_tee_core::order::CIPHERTEXT_LEN
+        || req.ciphertext[0] != dark_tee_core::ecies::VERSION
+    {
+        return Err(bad("ciphertext length"));
+    }
+    let order_id = B256::from(keccak(&req.ciphertext));
+    let chain = &ctx.chain;
+    let tx = chain
+        .send(
+            &format!("submitLotSell {order_id} (lot {})", req.lot),
+            chain.vault.submitLotSell(req.ciphertext, req.lot),
+        )
         .await?;
     Ok(Json(json!({ "orderId": order_id, "txHash": tx })))
 }
@@ -338,23 +466,37 @@ async fn withdraw(
     let amount = u128::try_from(num(&req.amount)?).map_err(|_| bad("amount exceeds u128"))?;
     let chain = &ctx.chain;
     if let Some(to) = req.redeem_to {
-        let gw = chain.gateway.as_ref().ok_or_else(|| bad("MON çekimi bu dağıtımda yok"))?;
+        let gw = chain
+            .gateway
+            .as_ref()
+            .ok_or_else(|| bad("MON çekimi bu dağıtımda yok"))?;
         let box_addr = gw.boxOf(to).call().await.map_err(anyhow::Error::from)?;
         if box_addr != req.recipient || req.token != chain.quote_token {
-            return Err(bad("recipient must be gateway.boxOf(redeemTo) and token dUSD"));
+            return Err(bad(
+                "recipient must be gateway.boxOf(redeemTo) and token dUSD",
+            ));
         }
     }
     let tx = chain
         .send(
             &format!("withdraw -> {}", req.recipient),
-            chain.vault.withdraw(proof, req.token, amount, num(&req.spend_blinding)?, req.recipient),
+            chain.vault.withdraw(
+                proof,
+                req.token,
+                amount,
+                num(&req.spend_blinding)?,
+                req.recipient,
+            ),
         )
         .await?;
     let (mut redeem_tx, mut redeem_error) = (None, None);
     if let (Some(to), Some(gw)) = (req.redeem_to, chain.gateway.as_ref()) {
         // Başarısız olursa (ör. gateway'de yeterli MON yok) dUSD kutuda güvende kalır ve
         // redeem(to) sonra herkes tarafından yeniden çağrılabilir.
-        match chain.send(&format!("redeem MON -> {to}"), gw.redeem(to)).await {
+        match chain
+            .send(&format!("redeem MON -> {to}"), gw.redeem(to))
+            .await
+        {
             Ok(h) => redeem_tx = Some(h),
             Err(e) => {
                 tracing::warn!(error = %e, %to, "redeem failed; dUSD stays in box");
@@ -362,7 +504,9 @@ async fn withdraw(
             }
         }
     }
-    Ok(Json(json!({ "txHash": tx, "redeemTxHash": redeem_tx, "redeemError": redeem_error })))
+    Ok(Json(
+        json!({ "txHash": tx, "redeemTxHash": redeem_tx, "redeemError": redeem_error }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -379,10 +523,21 @@ async fn register_project(
     Json(req): Json<RegisterProjectReq>,
 ) -> Result<Json<Value>, ApiError> {
     ctx.limiter.check(peer.ip())?;
-    let pad = ctx.chain.launchpad.as_ref().ok_or_else(|| bad("launchpad yok"))?;
-    let l = pad.launches(req.pool_id).call().await.map_err(anyhow::Error::from)?;
+    let pad = ctx
+        .chain
+        .launchpad
+        .as_ref()
+        .ok_or_else(|| bad("launchpad yok"))?;
+    let l = pad
+        .launches(req.pool_id)
+        .call()
+        .await
+        .map_err(anyhow::Error::from)?;
     if l.creator == Address::ZERO {
-        return Err(ApiError(StatusCode::NOT_FOUND, "no launch for this pool".into()));
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "no launch for this pool".into(),
+        ));
     }
     let project = ctx
         .news
@@ -396,7 +551,9 @@ async fn token_meta(ctx: &AppCtx, token: Address) -> Value {
         return v.clone();
     }
     let v = match ctx.chain.token_meta(token).await {
-        Ok((name, symbol, decimals)) => json!({ "address": token, "name": name, "symbol": symbol, "decimals": decimals }),
+        Ok((name, symbol, decimals)) => {
+            json!({ "address": token, "name": name, "symbol": symbol, "decimals": decimals })
+        }
         Err(_) => return json!({ "address": token }),
     };
     ctx.tokens.lock().await.insert(token, v.clone());
@@ -404,12 +561,25 @@ async fn token_meta(ctx: &AppCtx, token: Address) -> Value {
 }
 
 async fn pools(State(ctx): State<Arc<AppCtx>>) -> Json<Value> {
-    let metas: Vec<_> = ctx.index.state.read().await.pools.values().cloned().collect();
+    let metas: Vec<_> = ctx
+        .index
+        .state
+        .read()
+        .await
+        .pools
+        .values()
+        .cloned()
+        .collect();
     let quote = token_meta(&ctx, ctx.chain.quote_token).await;
     let now = now_unix();
     let mut out = Vec::new();
     for p in metas {
-        let news_24h = ctx.news.list(Some(p.pool_id), 1000).iter().filter(|n| n.timestamp + 86_400 >= now).count();
+        let news_24h = ctx
+            .news
+            .list(Some(p.pool_id), 1000)
+            .iter()
+            .filter(|n| n.timestamp + 86_400 >= now)
+            .count();
         out.push(json!({
             "poolId": p.pool_id,
             "base": token_meta(&ctx, p.base_token).await,
@@ -426,7 +596,10 @@ async fn pools(State(ctx): State<Arc<AppCtx>>) -> Json<Value> {
 
 /// Ghost chart: yalnızca kilidi açılmış (≥ 7 gün önceki) batch'lerin noktaları. Kilitli
 /// batch'ler için yalnızca zaman ve açılış anı döner — fiyat/hacim bilgisi YOKTUR.
-async fn history(State(ctx): State<Arc<AppCtx>>, Path(id): Path<u32>) -> Result<Json<Value>, ApiError> {
+async fn history(
+    State(ctx): State<Arc<AppCtx>>,
+    Path(id): Path<u32>,
+) -> Result<Json<Value>, ApiError> {
     let st = ctx.index.state.read().await;
     if !st.pools.contains_key(&id) {
         return Err(ApiError(StatusCode::NOT_FOUND, "unknown pool".into()));
@@ -436,7 +609,10 @@ async fn history(State(ctx): State<Arc<AppCtx>>, Path(id): Path<u32>) -> Result<
     let mut locked = Vec::new();
     for b in st.batches.values() {
         let time = ctx.chain.window_end(b.window);
-        match revealed.get(&b.batch_id).and_then(|r| r.summary.pools.iter().find(|p| p.pool_id == id)) {
+        match revealed
+            .get(&b.batch_id)
+            .and_then(|r| r.summary.pools.iter().find(|p| p.pool_id == id))
+        {
             Some(p) => points.push(json!({
                 "batchId": b.batch_id,
                 "time": time,
@@ -448,19 +624,27 @@ async fn history(State(ctx): State<Arc<AppCtx>>, Path(id): Path<u32>) -> Result<
                 "baseReserve": p.base_reserve.to_string(),
                 "quoteReserve": p.quote_reserve.to_string(),
             })),
-            None if !revealed.contains_key(&b.batch_id) => {
-                locked.push(json!({ "batchId": b.batch_id, "time": time, "unlockTime": b.unlock_time }))
-            }
+            None if !revealed.contains_key(&b.batch_id) => locked
+                .push(json!({ "batchId": b.batch_id, "time": time, "unlockTime": b.unlock_time })),
             None => {} // bu havuz o batch'te henüz yoktu
         }
     }
     if let Some(demo) = ctx.demo_history.get(&id) {
-        let first_real = points.first().and_then(|p| p["time"].as_u64()).unwrap_or(u64::MAX);
-        let mut merged: Vec<Value> = demo.iter().filter(|p| p["time"].as_u64().is_some_and(|t| t < first_real)).cloned().collect();
+        let first_real = points
+            .first()
+            .and_then(|p| p["time"].as_u64())
+            .unwrap_or(u64::MAX);
+        let mut merged: Vec<Value> = demo
+            .iter()
+            .filter(|p| p["time"].as_u64().is_some_and(|t| t < first_real))
+            .cloned()
+            .collect();
         merged.append(&mut points);
         points = merged;
     }
-    Ok(Json(json!({ "poolId": id, "windowSeconds": ctx.chain.window_seconds, "points": points, "locked": locked })))
+    Ok(Json(
+        json!({ "poolId": id, "windowSeconds": ctx.chain.window_seconds, "points": points, "locked": locked }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -479,7 +663,10 @@ async fn news_post(
     Json(post): Json<NewsPost>,
 ) -> Result<Json<Value>, ApiError> {
     ctx.limiter.check(peer.ip())?;
-    let saved = ctx.news.add(post, now_unix()).map_err(|e| ApiError(StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    let saved = ctx
+        .news
+        .add(post, now_unix())
+        .map_err(|e| ApiError(StatusCode::FORBIDDEN, format!("{e:#}")))?;
     Ok(Json(json!({ "news": saved })))
 }
 

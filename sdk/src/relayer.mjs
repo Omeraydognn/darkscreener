@@ -42,6 +42,16 @@ export class RelayerClient {
     return this.#req("/v1/orders", { ciphertext, proof });
   }
 
+  /** Kilitli lotu yüzdeyle sat: `lot` = satılan alımın (ya da önceki lot satışının) emir kimliği. */
+  submitLotSell(ciphertext, lot) {
+    return this.#req("/v1/lot-sells", { ciphertext, lot });
+  }
+
+  /** Emrin durumu; lot satışıysa `lotUpdate` (kalan lot), lotsa `lotSales`. */
+  order(orderId) {
+    return this.#req(`/v1/orders/${orderId}`);
+  }
+
   /** `redeemTo` verilirse çekim MON olarak yapılır; `recipient` = gateway.boxOf(redeemTo) olmalı. */
   withdraw(proof, token, amount, spendBlinding, recipient, redeemTo) {
     return this.#req("/v1/withdrawals", { proof, token, amount, spendBlinding, recipient, ...(redeemTo ? { redeemTo } : {}) });

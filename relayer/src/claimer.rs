@@ -2,6 +2,12 @@
 //! - `Refunded` → `returnRefunded` hemen (harcanan kısım not olarak geri döner)
 //! - `Filled`   → kilit açılınca `claimNote`
 //!
+//! Kilitli lotlar:
+//! - Satışı bekleyen lotun (`lotState = 1`) claim'i revert eder: satış settle edilince tekrar denenir.
+//! - Satılmış bir alımın (`lotState = 2`) claim'i ağaca not eklemez (karşılığı satış emrinin gelir
+//!   ve kalan notlarıdır): gaz harcanmaz. Kalanı satılmış bir lot SATIŞI ise gelir notu yine alınır.
+//! - Reddedilen lot satışı not harcamadığı için iadesi yoktur; lot settlement'ta serbest kalır.
+//!
 //! İkisi de izinsiz (permissionless) ve miktar/adres sızdırmaz; kullanıcının hiçbir şey
 //! yapmasına gerek kalmaz, işlemi kimin gönderdiği de görünmez (relayer gönderir).
 
@@ -15,6 +21,9 @@ use crate::{chain::Chain, index::Indexer};
 
 /// Tek adımda en fazla bu kadar işlem (döngü diğer görevleri bekletmesin).
 const MAX_PER_TICK: usize = 32;
+
+const LOT_PENDING: u8 = 1;
+const LOT_CONSUMED: u8 = 2;
 
 #[derive(Default)]
 pub struct Claimer {
@@ -38,22 +47,42 @@ impl Claimer {
                     if r.status == OrderStatus::Filled && now < b.unlock_time {
                         continue;
                     }
-                    work.push((b.batch_id, r.clone(), merkle_proof(&leaves, i)));
+                    let is_lot_sell = st.lot_sells.contains_key(&FixedBytes(r.order_id));
+                    if r.status == OrderStatus::Refunded && is_lot_sell {
+                        self.done.insert(r.order_id);
+                        continue;
+                    }
+                    work.push((b.batch_id, is_lot_sell, r.clone(), merkle_proof(&leaves, i)));
                 }
             }
         }
 
         let mut sent = 0;
-        for (batch_id, r, proof) in work.into_iter().take(MAX_PER_TICK) {
+        for (batch_id, is_lot_sell, r, proof) in work.into_iter().take(MAX_PER_TICK) {
             let id = FixedBytes(r.order_id);
             if chain.vault.orders(id).call().await?.done {
                 self.done.insert(r.order_id);
                 continue;
             }
+            if r.status == OrderStatus::Filled {
+                match chain.vault.lotState(id).call().await? {
+                    LOT_PENDING => continue,
+                    LOT_CONSUMED if !is_lot_sell => {
+                        self.done.insert(r.order_id);
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
             let proof: Vec<FixedBytes<32>> = proof.into_iter().map(FixedBytes).collect();
             let res = match r.status {
                 OrderStatus::Refunded => {
-                    chain.send(&format!("returnRefunded {id}"), chain.vault.returnRefunded(batch_id, id, proof)).await
+                    chain
+                        .send(
+                            &format!("returnRefunded {id}"),
+                            chain.vault.returnRefunded(batch_id, id, proof),
+                        )
+                        .await
                 }
                 OrderStatus::Filled => {
                     let sealed_hash = FixedBytes(keccak(&r.sealed_result));
@@ -61,7 +90,9 @@ impl Claimer {
                     chain
                         .send(
                             &format!("claimNote {id}"),
-                            chain.vault.claimNote(batch_id, id, commitment, sealed_hash, proof),
+                            chain
+                                .vault
+                                .claimNote(batch_id, id, commitment, sealed_hash, proof),
                         )
                         .await
                 }

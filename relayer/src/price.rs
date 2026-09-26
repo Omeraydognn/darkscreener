@@ -23,7 +23,14 @@ pub struct PriceUpdater {
 
 impl PriceUpdater {
     pub fn new() -> Result<Self> {
-        Ok(Self { http: reqwest::Client::builder().timeout(Duration::from_secs(15)).user_agent("darkscreener-relayer/0.2").build()?, last: None, last_price: None })
+        Ok(Self {
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .user_agent("darkscreener-relayer/0.2")
+                .build()?,
+            last: None,
+            last_price: None,
+        })
     }
 
     async fn fetch(&self) -> Result<f64> {
@@ -35,8 +42,13 @@ impl PriceUpdater {
             .error_for_status()?
             .json()
             .await?;
-        let usd = v["monad"]["usd"].as_f64().ok_or_else(|| anyhow!("no monad.usd in price response"))?;
-        ensure!(usd.is_finite() && usd > 0.0 && usd < 1_000.0, "implausible MON price {usd}");
+        let usd = v["monad"]["usd"]
+            .as_f64()
+            .ok_or_else(|| anyhow!("no monad.usd in price response"))?;
+        ensure!(
+            usd.is_finite() && usd > 0.0 && usd < 1_000.0,
+            "implausible MON price {usd}"
+        );
         Ok(usd)
     }
 
@@ -45,7 +57,9 @@ impl PriceUpdater {
             return Ok(());
         }
         self.last = Some(Instant::now());
-        let Some(gw) = chain.gateway.as_ref() else { return Ok(()) };
+        let Some(gw) = chain.gateway.as_ref() else {
+            return Ok(());
+        };
         let usd = self.fetch().await?;
         self.last_price = Some(usd);
         let target = (usd * 1e6).round() as u64; // dUSD birimi (6 ondalık) / 1 MON
@@ -55,7 +69,12 @@ impl PriceUpdater {
         if dev <= MAX_DEVIATION_BPS {
             return Ok(());
         }
-        chain.send(&format!("gateway.setRate {current} -> {target} (MON ≈ {usd} $)"), gw.setRate(U256::from(target))).await?;
+        chain
+            .send(
+                &format!("gateway.setRate {current} -> {target} (MON ≈ {usd} $)"),
+                gw.setRate(U256::from(target)),
+            )
+            .await?;
         Ok(())
     }
 }

@@ -3,7 +3,7 @@
 //!
 //! Tüm durum zincirden türetilir; relayer yeniden başlarsa `DEPLOY_BLOCK`'tan tekrar tarar.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use alloy::{
     eips::BlockNumberOrTag,
@@ -25,6 +25,8 @@ pub struct OrderRec {
     pub index: u32,
     pub spend_commitment: U256,
     pub ciphertext: Bytes,
+    /// `submitLotSell` ile gelen kilitli lot satışıysa satılan lotun (emrin) kimliği
+    pub lot: Option<B256>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -45,6 +47,8 @@ pub struct BatchRec {
     pub capsule: Bytes,
     pub sealed_summary: Bytes,
     pub results: Vec<IDarkVault::Result>,
+    /// Bu batch'teki lot satışlarının sonuçları (`BatchLots`)
+    pub lots: Vec<IDarkVault::LotUpdate>,
 }
 
 impl BatchRec {
@@ -54,7 +58,11 @@ impl BatchRec {
             .iter()
             .map(|r| OrderResult {
                 order_id: r.orderId.0,
-                status: if r.status == 1 { OrderStatus::Filled } else { OrderStatus::Refunded },
+                status: if r.status == 1 {
+                    OrderStatus::Filled
+                } else {
+                    OrderStatus::Refunded
+                },
                 output_commitment: r.commitment.0,
                 sealed_result: r.sealedResult.to_vec(),
             })
@@ -82,6 +90,44 @@ pub struct IndexState {
     pub batches: BTreeMap<u64, BatchRec>,
     /// NoteInserted olaylarından, indeks sırasıyla
     pub notes: Vec<U256>,
+    /// Emir kimliği -> (batch, sonuç indeksi)
+    pub result_at: HashMap<B256, (u64, usize)>,
+    /// Lot satışı emri -> satılan lot
+    pub lot_sells: HashMap<B256, B256>,
+}
+
+impl IndexState {
+    pub fn result(&self, order_id: &B256) -> Option<(&BatchRec, &IDarkVault::Result)> {
+        let (batch_id, i) = self.result_at.get(order_id)?;
+        let b = self.batches.get(batch_id)?;
+        Some((b, b.results.get(*i)?))
+    }
+
+    /// Lot satışının settlement sonucu (settle edildiyse).
+    pub fn lot_update(&self, sell_order_id: &B256) -> Option<(&BatchRec, &IDarkVault::LotUpdate)> {
+        let (batch_id, _) = self.result_at.get(sell_order_id)?;
+        let b = self.batches.get(batch_id)?;
+        Some((b, b.lots.iter().find(|l| l.sellOrderId == *sell_order_id)?))
+    }
+
+    /// Bu lotu satan emirler (en yenisi sonda).
+    pub fn sells_of(&self, lot: &B256) -> Vec<B256> {
+        let mut out: Vec<(u64, B256)> = self
+            .lot_sells
+            .iter()
+            .filter(|(_, l)| *l == lot)
+            .map(|(id, _)| {
+                let w = self
+                    .windows
+                    .iter()
+                    .find(|(_, r)| r.orders.iter().any(|o| o.order_id == *id))
+                    .map_or(0, |(w, _)| *w);
+                (w, *id)
+            })
+            .collect();
+        out.sort();
+        out.into_iter().map(|(_, id)| id).collect()
+    }
 }
 
 pub struct Indexer {
@@ -91,7 +137,13 @@ pub struct Indexer {
 
 impl Indexer {
     pub fn new(deploy_block: u64, chunk: u64) -> Self {
-        Self { state: RwLock::new(IndexState { cursor: deploy_block, ..Default::default() }), chunk: chunk.max(1) }
+        Self {
+            state: RwLock::new(IndexState {
+                cursor: deploy_block,
+                ..Default::default()
+            }),
+            chunk: chunk.max(1),
+        }
     }
 
     /// `finalized` başa kadar tarar. Parça parça ilerler; hata olursa imleç son başarılı parçada kalır.
@@ -107,7 +159,10 @@ impl Indexer {
         let mut from = self.state.read().await.cursor;
         while from <= head_number {
             let to = (from + self.chunk - 1).min(head_number);
-            let filter = Filter::new().address(*chain.vault.address()).from_block(from).to_block(to);
+            let filter = Filter::new()
+                .address(*chain.vault.address())
+                .from_block(from)
+                .to_block(to);
             let logs = chain.provider.get_logs(&filter).await?;
             let mut st = self.state.write().await;
             for log in &logs {
@@ -129,12 +184,18 @@ impl Indexer {
 }
 
 fn apply(st: &mut IndexState, log: &Log) -> Result<()> {
-    let Some(topic0) = log.topic0() else { return Ok(()) };
+    let Some(topic0) = log.topic0() else {
+        return Ok(());
+    };
     match *topic0 {
         IDarkVault::NoteInserted::SIGNATURE_HASH => {
             let e = log.log_decode::<IDarkVault::NoteInserted>()?.inner.data;
             if e.index as usize != st.notes.len() {
-                return Err(anyhow!("note index gap: got {}, expected {}", e.index, st.notes.len()));
+                return Err(anyhow!(
+                    "note index gap: got {}, expected {}",
+                    e.index,
+                    st.notes.len()
+                ));
             }
             st.notes.push(e.commitment);
         }
@@ -142,24 +203,54 @@ fn apply(st: &mut IndexState, log: &Log) -> Result<()> {
             let e = log.log_decode::<IDarkVault::PoolCreated>()?.inner.data;
             st.pools.insert(
                 e.poolId,
-                PoolMeta { pool_id: e.poolId, base_token: e.baseToken, window: e.window, init_base: e.base, init_quote: e.quote },
+                PoolMeta {
+                    pool_id: e.poolId,
+                    base_token: e.baseToken,
+                    window: e.window,
+                    init_base: e.base,
+                    init_quote: e.quote,
+                },
             );
-            st.windows.entry(e.window).or_default().pools.push(PoolInit {
-                pool_id: e.poolId,
-                base_token: e.baseToken.0 .0,
-                base: e.base,
-                quote: e.quote,
-            });
+            st.windows
+                .entry(e.window)
+                .or_default()
+                .pools
+                .push(PoolInit {
+                    pool_id: e.poolId,
+                    base_token: e.baseToken.0 .0,
+                    base: e.base,
+                    quote: e.quote,
+                });
         }
         IDarkVault::OrderSubmitted::SIGNATURE_HASH => {
             let e = log.log_decode::<IDarkVault::OrderSubmitted>()?.inner.data;
-            st.windows.entry(e.window).or_default().orders.push(OrderRec {
-                order_id: e.orderId,
-                shard: e.shard,
-                index: e.index,
-                spend_commitment: e.spendCommitment,
-                ciphertext: e.ciphertext,
-            });
+            st.windows
+                .entry(e.window)
+                .or_default()
+                .orders
+                .push(OrderRec {
+                    order_id: e.orderId,
+                    shard: e.shard,
+                    index: e.index,
+                    spend_commitment: e.spendCommitment,
+                    ciphertext: e.ciphertext,
+                    lot: None,
+                });
+        }
+        // Aynı işlemde OrderSubmitted'tan hemen sonra gelir.
+        IDarkVault::LotSellSubmitted::SIGNATURE_HASH => {
+            let e = log.log_decode::<IDarkVault::LotSellSubmitted>()?.inner.data;
+            let rec = st
+                .windows
+                .values_mut()
+                .rev()
+                .flat_map(|w| w.orders.iter_mut().rev())
+                .find(|o| o.order_id == e.orderId)
+                .ok_or_else(|| {
+                    anyhow!("LotSellSubmitted before OrderSubmitted for {}", e.orderId)
+                })?;
+            rec.lot = Some(e.lot);
+            st.lot_sells.insert(e.orderId, e.lot);
         }
         IDarkVault::BatchSettled::SIGNATURE_HASH => {
             let e = log.log_decode::<IDarkVault::BatchSettled>()?.inner.data;
@@ -175,6 +266,7 @@ fn apply(st: &mut IndexState, log: &Log) -> Result<()> {
                     capsule: Bytes::new(),
                     sealed_summary: Bytes::new(),
                     results: vec![],
+                    lots: vec![],
                 },
             );
         }
@@ -188,6 +280,18 @@ fn apply(st: &mut IndexState, log: &Log) -> Result<()> {
             b.capsule = e.capsule;
             b.sealed_summary = e.sealedSummary;
             b.results = e.results;
+            let ids: Vec<B256> = b.results.iter().map(|r| r.orderId).collect();
+            for (i, id) in ids.into_iter().enumerate() {
+                st.result_at.insert(id, (e.batchId, i));
+            }
+        }
+        IDarkVault::BatchLots::SIGNATURE_HASH => {
+            let e = log.log_decode::<IDarkVault::BatchLots>()?.inner.data;
+            let b = st
+                .batches
+                .get_mut(&e.batchId)
+                .ok_or_else(|| anyhow!("BatchLots before BatchSettled for {}", e.batchId))?;
+            b.lots = e.lots;
         }
         _ => {}
     }

@@ -16,7 +16,11 @@ use tokio::sync::RwLock;
 use crate::index::Indexer;
 
 /// Aynı ağın farklı aynaları; biri düşerse sıradaki denenir.
-const DRAND_MIRRORS: &[&str] = &["https://api.drand.sh", "https://api2.drand.sh", "https://drand.cloudflare.com"];
+const DRAND_MIRRORS: &[&str] = &[
+    "https://api.drand.sh",
+    "https://api2.drand.sh",
+    "https://drand.cloudflare.com",
+];
 
 #[derive(Debug, Clone)]
 pub struct Revealed {
@@ -38,7 +42,9 @@ struct Beacon {
 impl Revealer {
     pub fn new() -> Result<Self> {
         Ok(Self {
-            http: reqwest::Client::builder().timeout(Duration::from_secs(10)).build()?,
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()?,
             revealed: RwLock::new(BTreeMap::new()),
         })
     }
@@ -72,7 +78,14 @@ impl Revealer {
                 .values()
                 .filter(|b| !b.capsule.is_empty() && !done.contains_key(&b.batch_id))
                 .filter(|b| dark_tee_core::timelock::round_time(b.unlock_round) <= now_unix)
-                .map(|b| (b.batch_id, b.unlock_round, b.capsule.to_vec(), b.sealed_summary.to_vec()))
+                .map(|b| {
+                    (
+                        b.batch_id,
+                        b.unlock_round,
+                        b.capsule.to_vec(),
+                        b.sealed_summary.to_vec(),
+                    )
+                })
                 .collect()
         };
         let mut n = 0;
@@ -80,8 +93,12 @@ impl Revealer {
             let sig = self.beacon(round).await?;
             // Kapsül yanlış tura/imzaya karşı AEAD ile doğrulanır: sahte beacon açamaz.
             let kb = open_capsule(&capsule, &sig).map_err(|e| anyhow!("batch {batch_id}: {e}"))?;
-            let summary = open_summary(&kb, batch_id, &sealed).map_err(|e| anyhow!("batch {batch_id}: {e}"))?;
-            self.revealed.write().await.insert(batch_id, Revealed { kb: *kb, summary });
+            let summary = open_summary(&kb, batch_id, &sealed)
+                .map_err(|e| anyhow!("batch {batch_id}: {e}"))?;
+            self.revealed
+                .write()
+                .await
+                .insert(batch_id, Revealed { kb: *kb, summary });
             n += 1;
         }
         Ok(n)
