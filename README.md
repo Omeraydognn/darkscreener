@@ -1,6 +1,4 @@
 
-> **AI Context:** `darkscreener` Monad testnet üzerinde çalışan, **fiyatı ve işlemleri gizleyen bir dark pool DEX**'tir. Emirler tarayıcıda şifrelenir ve ZK kanıtıyla (Groth16, `spend.circom`) shielded not havuzundan harcanır. Relayer gönderir, TEE enclave batch halinde FM-AMM ile eşleştirir, `DarkVault.settleBatch` enclave imzasını doğrular. Sonuçlar **7 gün boyunca drand zaman kilidindedir**. Kullanıcılar canlı fiyat yerine proje haberlerini ve 7 gün gecikmeli "ghost chart"ı görür. Kod dilleri: Rust, Solidity, Circom, TypeScript. Ana dizinler: `tee-core/`, `contracts/`, `circuits/`, `relayer/`, `sdk/`, `frontend/`.
-
 <div align="center">
 
 
