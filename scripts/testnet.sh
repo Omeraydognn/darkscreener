@@ -6,6 +6,7 @@
 #   ./scripts/testnet.sh up       # enclave + relayer'ı çalıştır (açık kaldığı sürece)
 #   ./scripts/testnet.sh down     # çalışan enclave + relayer'ı durdur
 #   ./scripts/testnet.sh news <poolId> "<başlık>" "<metin>"   # demo projesi adına imzalı haber
+#   ./scripts/testnet.sh news-seed [dosya]   # scripts/news.seed.json: gizli döneme tarihli imzalı haberler (sonra: down + up)
 #
 # Anahtarlar .testnet/ altındadır (git dışı, 600) ve hiçbir çıktıya yazdırılmaz.
 # Enclave şimdilik TEE_PROVIDER=local (donanımsız) çalışır; Oyster CVM için oyster/README.md.
@@ -163,11 +164,14 @@ down)
   echo "relayer ve enclave durduruldu"
   ;;
 
+news-seed)
+  NEWS_KEYS="$T/news-keys.json" NEWS_FILE="$T/news.jsonl" node sdk/e2e/seed-news.mjs "${2:-scripts/news.seed.json}"
+  ;;
 news)
   shift
   NEWS_KEY=$(jq -r --arg p "$1" '.[$p]' "$T/news-keys.json") RELAYER_URL=http://127.0.0.1:$PORT_RELAYER \
     node sdk/e2e/post-news.mjs "$@"
   ;;
 
-*) sed -n 2,9p "$0"; exit 2 ;;
+*) sed -n 2,10p "$0"; exit 2 ;;
 esac
