@@ -1,12 +1,12 @@
 {
   "chainId": 10143,
-  "deployBlock": 65867875,
-  "gateway": "0x0c916F20f7d8FfbaaF06F570eE0EDd7fA20b8dd8",
-  "launchpad": "0x2B678c76B5C9c7d331dc2b2d35C18271db2C22d2",
-  "quoteToken": "0x0ED01119b38953FE6Ea6086e88ec2124e26c0861",
-  "registry": "0xed983Ba8B5167a81251dc86A6b921Cc34B5b0301",
-  "usdPerMon": 26678,
-  "vault": "0xD5862610405B8023194363243E2Db1CeAac09B27",
-  "verifier": "0xD0F16409DA940D491E8712E3CCcC97127Ca9212E",
+  "deployBlock": 65885107,
+  "gateway": "0x8392Cf05DFc99c907A27967D295854E0F6eE5984",
+  "launchpad": "0x2c85b76f181E10d3433c0D2eFa5Dcc7ce7bdf47c",
+  "quoteToken": "0xF6c98BBA0A882bCcf22F52Da3B30DDD7eccFa1de",
+  "registry": "0x887ccc96FdaDb8CEACf04D5A26eb5BA68fdBe016",
+  "usdPerMon": 26000,
+  "vault": "0x17561CcF190F1bda9316Ea74A26d50AE30d035cE",
+  "verifier": "0x0Fd545a0C665AA4E94e2d41b83dCA4600E77035b",
   "windowSeconds": 60
 }
