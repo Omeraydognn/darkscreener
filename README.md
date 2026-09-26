@@ -29,12 +29,12 @@ ai_context:
 
 **Fiyatı gizli, projesi görünür: balinaların ve fenomenlerin manipüle edemediği, ZK + TEE ile çalışan gizli DEX.**
 
-[![Monad Testnet](https://img.shields.io/badge/Monad-Testnet%2010143-ff1f3d?style=flat-square)](https://testnet.monad.xyz)
+[![Monad Testnet](https://img.shields.io/badge/Monad-Testnet%2010143-7b8cff?style=flat-square)](https://testnet.monad.xyz)
 [![Rust](https://img.shields.io/badge/Rust-1.95-000000?style=flat-square&logo=rust)](tee-core/)
 [![Solidity](https://img.shields.io/badge/Solidity-0.8.30-363636?style=flat-square&logo=solidity)](contracts/)
-[![Circom](https://img.shields.io/badge/Circom-2.2.3%20·%20Groth16-ff1f3d?style=flat-square)](circuits/)
+[![Circom](https://img.shields.io/badge/Circom-2.2.3%20·%20Groth16-7b8cff?style=flat-square)](circuits/)
 [![Next.js](https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=nextdotjs)](frontend/)
-[![TEE](https://img.shields.io/badge/TEE-Marlin%20Oyster-ff1f3d?style=flat-square)](oyster/)
+[![TEE](https://img.shields.io/badge/TEE-Marlin%20Oyster-7b8cff?style=flat-square)](oyster/)
 [![drand](https://img.shields.io/badge/Timelock-drand%20quicknet-000000?style=flat-square)](tee-core/src/timelock.rs)
 
 </div>

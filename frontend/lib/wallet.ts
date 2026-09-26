@@ -100,17 +100,71 @@ export function devSigner(): Signer {
 }
 
 type Eip1193 = { request: (a: { method: string; params?: unknown[] }) => Promise<unknown> };
+type RpcError = { code?: number; message?: string; data?: { originalError?: { code?: number } } };
+
+/** EIP-6963: birden çok cüzdan eklentisi `window.ethereum` için yarışır; MetaMask'ı açıkça seç. */
+function discoverProvider(): Promise<Eip1193 | undefined> {
+  return new Promise((resolve) => {
+    const found: { rdns: string; provider: Eip1193 }[] = [];
+    const onAnnounce = (e: Event) => {
+      const d = (e as CustomEvent<{ info: { rdns: string }; provider: Eip1193 }>).detail;
+      if (d?.provider) found.push({ rdns: d.info?.rdns ?? "", provider: d.provider });
+    };
+    window.addEventListener("eip6963:announceProvider", onAnnounce);
+    window.dispatchEvent(new Event("eip6963:requestProvider"));
+    setTimeout(() => {
+      window.removeEventListener("eip6963:announceProvider", onAnnounce);
+      const pick = found.find((f) => f.rdns === "io.metamask") ?? found[0];
+      resolve(pick?.provider ?? (globalThis as { ethereum?: Eip1193 }).ethereum);
+    }, 300);
+  });
+}
+
+const rpcCode = (e: unknown) => (e as RpcError)?.data?.originalError?.code ?? (e as RpcError)?.code;
+
+/** Cüzdanı doğru ağa getirir. Ağ eklemeyi YALNIZCA cüzdan "tanımıyorum" (4902) derse dener;
+ * reddi yutup ardından ikinci bir onay penceresi açmak MetaMask arayüzünü çökertebiliyor. */
+async function ensureChain(eth: Eip1193) {
+  const hexId = `0x${chain.id.toString(16)}`;
+  if (Number(await eth.request({ method: "eth_chainId" })) === chain.id) return;
+  try {
+    await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: hexId }] });
+  } catch (e) {
+    if (rpcCode(e) === 4001) throw new Error("Ağ değişikliği reddedildi.");
+    if (rpcCode(e) !== 4902) throw new Error(`Cüzdan ağ değiştiremedi: ${(e as RpcError).message ?? e}`);
+    await eth.request({
+      method: "wallet_addEthereumChain",
+      params: [{
+        chainId: hexId,
+        chainName: config.chainName,
+        nativeCurrency: chain.nativeCurrency,
+        rpcUrls: [config.rpcUrl],
+        ...(config.explorerUrl ? { blockExplorerUrls: [config.explorerUrl] } : {}),
+      }],
+    });
+  }
+}
 
 export async function injectedSigner(): Promise<Signer> {
-  const eth = (globalThis as { ethereum?: Eip1193 }).ethereum;
-  if (!eth) throw new Error("Tarayıcı cüzdanı bulunamadı");
-  const client = createWalletClient({ chain, transport: custom(eth) });
-  const [address] = await client.requestAddresses();
+  const eth = await discoverProvider();
+  if (!eth) throw new Error("Tarayıcı cüzdanı bulunamadı. MetaMask kurun ya da açın.");
+  let accounts: string[];
   try {
-    await client.switchChain({ id: chain.id });
-  } catch {
-    await client.addChain({ chain });
+    accounts = (await eth.request({ method: "eth_requestAccounts" })) as string[];
+  } catch (e) {
+    if (rpcCode(e) === -32002) throw new Error("MetaMask'ta bekleyen bir istek var: eklentiyi açıp onu tamamlayın.");
+    if (rpcCode(e) === 4001) throw new Error("Bağlantı reddedildi.");
+    throw e;
   }
+  if (!accounts?.length) throw new Error("Cüzdanda hesap yok.");
+  await ensureChain(eth);
+  // Cüzdandaki ağ aynı chainId'ye sahip ama farklı bir RPC'ye (ör. hazır "Localhost 8545") bağlı
+  // olabilir: o zaman işlemler başka bir zincire gider. Vault kodunu cüzdanın kendi RPC'sinden oku.
+  const code = (await eth.request({ method: "eth_getCode", params: [config.vault, "latest"] })) as string;
+  if (!code || code === "0x")
+    throw new Error(`Cüzdandaki ${chain.id} ağı farklı bir RPC'ye bağlı. MetaMask ağ ayarlarında RPC adresini ${config.rpcUrl} yapın.`);
+  const address = getAddress(accounts[0]);
+  const client = createWalletClient({ chain, transport: custom(eth), account: address });
   return { address, account: address, client, kind: "injected" };
 }
 
