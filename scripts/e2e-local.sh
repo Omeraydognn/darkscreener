@@ -42,7 +42,8 @@ ENCLAVE_ADDRESS=$(curl -s http://127.0.0.1:$PORT_ENCLAVE/pubkey | jq -r .address
 
 echo "==> kontratlar (pencere 5 sn)"
 cd contracts
-OWNER=$DEPLOYER ENCLAVE_ADDRESS=$ENCLAVE_ADDRESS WINDOW_SECONDS=5 \
+# Yerel test kuru 1 MON = 10 $ (fonlanan 1000 ETH ile 1000 $ yatırılabilsin; testnet varsayılanı piyasa kuru)
+OWNER=$DEPLOYER ENCLAVE_ADDRESS=$ENCLAVE_ADDRESS WINDOW_SECONDS=5 USD_PER_MON=10000000 \
   forge script script/Deploy.s.sol --rpc-url $RPC --broadcast --private-key "$DEPLOYER_KEY" -q >/dev/null
 CHAIN_ID=$(cast chain-id --rpc-url $RPC)
 DEPLOYMENT=$ROOT/contracts/deployments/$CHAIN_ID.json

@@ -90,18 +90,19 @@ export type OrderRec = {
   amountIn: string;
   /** Satışlarda kullanıcının seçtiği yüzde */
   pct?: number;
+  /** secretHash(owner, spendR) = emrin spendBlinding'i. Lot satışında: lotu doğuran alımınki (satış yetkisi). */
   spendR: string;
+  /** Kilitli lot satışı: satılan lotun emir kimliği (alım ya da önceki lot satışı). Miktar bilinmez (amountIn = 0). */
+  lot?: `0x${string}`;
+  /** Lot satışında satılmayan kısım (kalan lot): miktarı kilit açılınca görünür */
+  remainder?: { amount: string };
+  /** Bu emrin sonucu (kilitli lot) satışta ya da satıldı: sonucu ağaca girmez, karşılığı satışın notlarıdır */
+  lotSale?: { orderId: `0x${string}`; state: "pending" | "sold" };
   createdAt: number;
   state: OrderState;
   batchId?: number;
   unlockTime?: number;
   result?: { outToken: `0x${string}`; amountOut: string };
-  /** Kilitli lot satışı: satılan lot (alım ya da önceki lot satışı). Miktar bilinmez (`amountIn` = 0). */
-  lot?: `0x${string}`;
-  /** Lot sahipliği açılışı (lotun ilk alımındaki spendBlinding); kalan lot yeniden satılırken gerekir */
-  lotAuth?: string;
-  /** Bu lotu (alımın ya da kalanın sonucunu) satan lot satışı emri */
-  soldBy?: `0x${string}`;
 };
 
 export type Activity = {
@@ -259,46 +260,32 @@ export class ShieldedWallet {
     const leaves = new Set(((await res.json()) as { commitments: string[] }).commitments.map((c) => c.toLowerCase()));
     for (const n of b.notes) if (n.status === "pending" && leaves.has(n.commitment.toLowerCase())) n.status = "ready";
 
-    const byId = new Map(b.orders.map((o) => [o.orderId, o]));
-    // Önce lot satışlarının settle durumu: reddedilen satış lotu serbest bırakır.
-    const open = b.orders.filter((o) => o.state !== "revealed" && o.state !== "refunded");
-    const statuses = new Map<string, Awaited<ReturnType<typeof api.order>> | null>();
-    for (const o of open) {
+    for (const o of b.orders.filter((o) => o.state !== "revealed" && o.state !== "refunded")) {
       const s = await api.order(o.orderId).catch(() => null);
-      statuses.set(o.orderId, s);
       if (!s?.batchId) continue;
       o.batchId = s.batchId;
       o.unlockTime = s.unlockTime;
-    }
-    for (const o of open) {
-      const s = statuses.get(o.orderId);
-      if (!o.lot || !s?.batchId || s.status !== 2) continue;
-      o.state = "refunded"; // not harcanmadı: iade notu yok
-      const lot = byId.get(o.lot);
-      if (lot?.soldBy === o.orderId) lot.soldBy = undefined;
-    }
-
-    for (const o of open.filter((o) => o.state !== "refunded")) {
-      const s = statuses.get(o.orderId);
-      if (!s?.batchId) continue;
+      // Sonucu kilitli lot olarak satıldı mı? Relayer henüz görmediyse yereldeki bekleyen satış korunur.
+      const sales = s.lotSales ?? [];
+      const live = sales.filter((x) => x.state !== "rejected").at(-1);
+      if (live) o.lotSale = { orderId: live.orderId as Hex, state: live.state as "pending" | "sold" };
+      else if (!o.lotSale || sales.some((x) => x.orderId.toLowerCase() === o.lotSale!.orderId.toLowerCase())) o.lotSale = undefined;
+      const sold = o.lotSale?.state === "sold";
       if (s.status === 2) {
         o.state = "refunded";
-        this.addNote(b, o.inToken, BigInt(o.amountIn), BigInt(o.spendR), "refund");
-      } else if (s.kb && s.sealedResult) {
-        // Bu sonuç lot olarak satıldıysa satışın settle edilmesini bekle: gerçekleştiyse not ağaca girmez.
-        const sale = o.soldBy ? byId.get(o.soldBy) : undefined;
-        if (sale && !sale.batchId) continue;
-        const consumed = !!sale && sale.state !== "refunded";
+        // Lot satışı not harcamaz: reddedilince lot olduğu gibi kalır, iade notu yoktur.
+        if (!o.lot) this.addNote(b, o.inToken, BigInt(o.amountIn), BigInt(o.spendR), "refund");
+      } else if (s.kb && s.sealedResult && o.lotSale?.state !== "pending") {
         const kb = hexToBytes(s.kb as Hex);
         const r = await openResult(kb, this.viewSk, o.orderId, hexToBytes(s.sealedResult as Hex));
         o.result = { outToken: getAddress(r.outToken), amountOut: r.amountOut.toString() };
         o.state = "revealed";
-        // Alım lotu satıldıysa sonucu ağaca girmez; lot satışının geliri her zaman girer.
-        if (!consumed || o.lot) this.addNote(b, getAddress(r.outToken), r.amountOut, r.blinding, "output");
-        // Lot satışında satılmayan kısım (kalan), kendisi de satılmadıysa ağaca girer.
-        if (o.lot && !consumed && s.lotUpdate?.filled && s.lotUpdate.sealedRemainder !== "0x") {
+        // Satılmış bir alımın sonucu ağaca girmez; lot satışının geliri her zaman girer.
+        if (o.lot || !sold) this.addNote(b, getAddress(r.outToken), r.amountOut, r.blinding, "output");
+        if (o.lot && s.lotUpdate?.filled && s.lotUpdate.sealedRemainder) {
           const rest = await openRemainder(kb, this.viewSk, o.orderId, hexToBytes(s.lotUpdate.sealedRemainder as Hex));
-          this.addNote(b, getAddress(rest.outToken), rest.amountOut, rest.blinding, "output");
+          o.remainder = { amount: rest.amountOut.toString() };
+          if (!sold) this.addNote(b, getAddress(rest.outToken), rest.amountOut, rest.blinding, "output");
         }
       } else {
         o.state = "locked";
@@ -415,7 +402,10 @@ export class ShieldedWallet {
     return proofForRelayer({ proof, publicInputs });
   }
 
-  private async order(p: { info: Info; pool: Pool; side: "buy" | "sell"; total: bigint; pct?: number; group?: string }, onStep?: (s: string) => void) {
+  private async order(
+    p: { info: Info; pool: Pool; side: "buy" | "sell"; total: bigint; pct?: number; group?: string },
+    onStep?: (s: string) => void,
+  ) {
     if (!p.info.enclave.registered) throw new Error("Enclave anahtarı zincirde kayıtlı değil; emir şifrelenmedi");
     const inToken = getAddress(p.side === "buy" ? p.pool.quote.address : p.pool.base.address);
     const parts = this.allocate(this.load(), inToken, p.total);
@@ -465,77 +455,72 @@ export class ShieldedWallet {
     return this.order({ info, pool, side: "buy", total: usd }, onStep);
   }
 
-  /** Kilidi açılmamış ama settle edilmiş, yüzdeyle satılabilir alımlar ("lot") ve kalanlar. */
+  /** Satılabilir kilitli lotlar: settle edilmiş, kilidi açılmamış ve satışta olmayan alım sonuçları ile
+   * lot satışlarının kalan kısımları (%100 satışın kalanı boştur). Miktarlarını kullanıcı bilmez. */
   sellableLots(b: Book, poolId: number): OrderRec[] {
     return b.orders.filter(
-      (o) =>
-        o.poolId === poolId &&
-        o.state === "locked" &&
-        !!o.batchId &&
-        !o.soldBy &&
-        (o.side === "buy" || (!!o.lot && (o.pct ?? 100) < 100)),
+      (o) => o.poolId === poolId && o.state === "locked" && !o.lotSale && (o.side === "buy" || (!!o.lot && o.pct !== 100)),
     );
   }
 
-  /** Satışı bekleyen ya da henüz settle edilmemiş (birazdan satılabilir olacak) lotlar. */
-  pendingLots(b: Book, poolId: number) {
-    const lots = b.orders.filter((o) => o.poolId === poolId && (o.side === "buy" || !!o.lot));
-    return {
-      /** Alım gönderildi, pencere kapanıp settle edilince satılabilir */
-      settling: lots.filter((o) => o.side === "buy" && o.state === "sent").length,
-      /** Önceki bir lot satışı işleniyor */
-      selling: lots.filter((o) => o.state === "locked" && o.soldBy && byIdState(b, o.soldBy) === "sent").length,
-    };
+  /** Henüz settle edilmemiş (lotu oluşmamış) alımlar: settle edilince satılabilir. */
+  unsettledBuys(b: Book, poolId: number): OrderRec[] {
+    return b.orders.filter((o) => o.poolId === poolId && o.side === "buy" && o.state === "sent");
   }
 
-  /**
-   * Eldeki token'ın yüzdesiyle gizli satış: miktar gösterilmez, gelir 7 gün sonra açılır.
-   * Kilidi açılmamış alımlar da ("lot") aynı yüzdeyle satılır: miktarı kimse (kullanıcı dahil)
-   * bilmez, enclave kendi lot notundan hesaplar.
-   */
+  /** Yüzdeyle gizli satış: eldeki token'ın ve HER kilitli lotun aynı yüzdesi satılır. Miktar gösterilmez,
+   * gelir 7 gün sonra açılır. Kilitli lotun miktarını yalnızca enclave bilir. */
   async sell(info: Info, pool: Pool, pct: number, onStep?: (s: string) => void) {
     if (!(pct > 0 && pct <= 100)) throw new Error("Yüzde 1 ile 100 arasında olmalı");
     const b = this.load();
     const held = this.balance(b, pool.base.address);
     const lots = this.sellableLots(b, pool.poolId);
-    if (held === 0n && lots.length === 0) throw new Error("Satılabilir token yok");
-    const total = pct === 100 ? held : (held * BigInt(Math.round(pct * 100))) / 10_000n;
-    if (total === 0n && lots.length === 0) throw new Error("Seçilen yüzde çok küçük");
+    if (held === 0n && lots.length === 0) {
+      throw new Error(
+        this.unsettledBuys(b, pool.poolId).length
+          ? "Alımın henüz settle edilmedi; birkaç dakika sonra kilitli haliyle satabilirsin"
+          : "Satılabilir token yok",
+      );
+    }
     const group = bytesToHex(crypto.getRandomValues(new Uint8Array(8)));
-    if (total > 0n) await this.order({ info, pool, side: "sell", total, pct, group }, onStep);
-    if (lots.length) await this.sellLots(info, pool, lots, pct, group, onStep);
+    if (held > 0n) {
+      const total = pct === 100 ? held : (held * BigInt(Math.round(pct * 100))) / 10_000n;
+      if (total === 0n && lots.length === 0) throw new Error("Seçilen yüzde çok küçük");
+      if (total > 0n) await this.order({ info, pool, side: "sell", total, pct, group }, onStep);
+    }
+    for (const [i, lot] of lots.entries()) {
+      await this.lotSell(info, pool, lot, pct, group, lots.length > 1 ? ` (${i + 1}/${lots.length})` : "", onStep);
+    }
   }
 
-  private async sellLots(info: Info, pool: Pool, lots: OrderRec[], pct: number, group: string, onStep?: (s: string) => void) {
+  /** Kilitli lotun yüzdesini sat: kanıt yok; sahiplik şifreli gövdedeki yetkiyle (alımın spendBlinding'i)
+   * enclave'de doğrulanır. Gelir ve kalan lot, satışın kilidi açılınca görünür. */
+  private async lotSell(info: Info, pool: Pool, lot: OrderRec, pct: number, group: string, tag: string, onStep?: (s: string) => void) {
     if (!info.enclave.registered) throw new Error("Enclave anahtarı zincirde kayıtlı değil; emir şifrelenmedi");
-    const pctBps = Math.min(10_000, Math.max(1, Math.round(pct * 100)));
-    for (const [i, lot] of lots.entries()) {
-      const tag = lots.length > 1 ? ` (${i + 1}/${lots.length})` : "";
-      const auth = lot.lotAuth ? BigInt(lot.lotAuth) : this.h.secretHash(this.owner, BigInt(lot.spendR));
-      onStep?.(`Kilitli alım satışı şifreleniyor${tag}`);
-      const ct = await encryptLotSell(hexToBytes(info.enclave.publicKey as Hex), config.chainId, config.vault, {
-        poolId: pool.poolId,
-        pctBps,
-        lotOrderId: lot.orderId,
-        auth,
-      });
-      onStep?.(`Relayer üzerinden gönderiliyor${tag}`);
-      const res = await fetch(`${config.relayerUrl}/v1/lot-sells`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ciphertext: bytesToHex(ct), lot: lot.orderId }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Relayer satışı reddetti");
-      const after = this.load();
-      const x = after.orders.find((o) => o.orderId === lot.orderId);
-      if (x) x.soldBy = json.orderId;
-      after.orders.unshift({
-        orderId: json.orderId, group, poolId: pool.poolId, side: "sell", inToken: getAddress(pool.base.address), amountIn: "0",
-        pct, spendR: "0", createdAt: Date.now(), state: "sent", lot: lot.orderId, lotAuth: auth.toString(),
-      });
-      this.save(after);
-    }
+    onStep?.(`Kilitli lot satışı şifreleniyor${tag}`);
+    const ct = await encryptLotSell(hexToBytes(info.enclave.publicKey as Hex), config.chainId, config.vault, {
+      poolId: pool.poolId,
+      pctBps: Math.min(10_000, Math.max(1, Math.round(pct * 100))),
+      lotOrderId: lot.orderId,
+      auth: this.h.secretHash(this.owner, BigInt(lot.spendR)),
+    });
+    onStep?.(`Relayer üzerinden gönderiliyor${tag}`);
+    const res = await fetch(`${config.relayerUrl}/v1/lot-sells`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ciphertext: bytesToHex(ct), lot: lot.orderId }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error ?? "Relayer lot satışını reddetti");
+
+    const after = this.load();
+    const l = after.orders.find((x) => x.orderId === lot.orderId);
+    if (l) l.lotSale = { orderId: json.orderId, state: "pending" };
+    after.orders.unshift({
+      orderId: json.orderId, group, poolId: pool.poolId, side: "sell", lot: lot.orderId, inToken: getAddress(pool.base.address),
+      amountIn: "0", pct, spendR: lot.spendR, createdAt: Date.now(), state: "sent",
+    });
+    this.save(after);
   }
 
   // ---- çekim
@@ -664,8 +649,6 @@ export class ShieldedWallet {
   }
 }
 
-const byIdState = (b: Book, id: string) => b.orders.find((o) => o.orderId === id)?.state;
-
 // ---------------------------------------------------------------- portföy
 
 export type Position = {
@@ -677,10 +660,19 @@ export type Position = {
   /** Kilitli alım sayısı ve en yakın açılış */
   lockedBuys: number;
   nextBuyUnlock?: number;
+  /** Miktarı henüz bilinmeyen kilitli lotlar (alımlar ve lot satışlarının kalan kısımları) */
+  lockedLots: number;
+  nextLotUnlock?: number;
   /** Satılan token (bilinen) ve kilitli satışlar */
   sold: bigint;
+  /** Miktarı henüz bilinmeyen kilitli lot satışları */
+  soldUnknown: number;
   lockedSells: number;
   nextSellUnlock?: number;
+  /** Kilitli lot satışı sayısı (işlem grubu) */
+  lotSells: number;
+  /** Açılmış lot satışlarında satılmayan kısım (kalan lot) */
+  remainder: bigint;
   /** Açılmış satışlardan gelen dolar */
   proceeds: bigint;
   /** Şu an elde tutulan (harcanabilir) token */
@@ -689,24 +681,45 @@ export type Position = {
 
 export function positions(w: ShieldedWallet, b: Book, pools: Pool[]): Position[] {
   const out: Position[] = [];
+  const byId = new Map(b.orders.map((o) => [o.orderId.toLowerCase(), o]));
+  // Lotun miktarı (açıldıysa): alımın sonucu ya da önceki lot satışının kalan kısmı
+  const lotAmount = (id: string) => {
+    const l = byId.get(id.toLowerCase());
+    return l?.side === "buy" ? l.result?.amountOut : l?.remainder?.amount;
+  };
   for (const pool of pools) {
     const os = b.orders.filter((o) => o.poolId === pool.poolId && o.state !== "refunded");
     if (!os.length && w.balance(b, pool.base.address) === 0n) continue;
     const buys = os.filter((o) => o.side === "buy");
     const sells = os.filter((o) => o.side === "sell");
+    const lotSells = sells.filter((o) => o.lot);
     const lockedB = buys.filter((o) => o.state !== "revealed");
     const lockedS = sells.filter((o) => o.state !== "revealed");
+    // Satışta olmayan, açılmamış lotlar: miktarları henüz bilinmiyor
+    const lockedL = os.filter((o) => (o.side === "buy" || (o.lot && o.pct !== 100)) && o.state !== "revealed" && !o.lotSale);
     const minUnlock = (xs: OrderRec[]) => xs.map((o) => o.unlockTime).filter((t): t is number => !!t).sort((a, c) => a - c)[0];
     const sum = (xs: OrderRec[], f: (o: OrderRec) => string | undefined) => xs.reduce((a, o) => a + BigInt(f(o) ?? "0"), 0n);
+    let sold = sum(sells.filter((o) => !o.lot), (o) => o.amountIn);
+    let soldUnknown = 0;
+    for (const o of lotSells) {
+      const total = lotAmount(o.lot!);
+      if (total !== undefined && o.remainder) sold += BigInt(total) - BigInt(o.remainder.amount);
+      else soldUnknown++;
+    }
     out.push({
       poolId: pool.poolId,
       invested: sum(buys, (o) => o.amountIn),
       received: sum(buys.filter((o) => o.state === "revealed"), (o) => o.result?.amountOut),
       lockedBuys: new Set(lockedB.map((o) => o.group)).size,
       nextBuyUnlock: minUnlock(lockedB),
-      sold: sum(sells, (o) => o.amountIn),
+      lockedLots: lockedL.length,
+      nextLotUnlock: minUnlock(lockedL),
+      sold,
+      soldUnknown,
       lockedSells: new Set(lockedS.map((o) => o.group)).size,
       nextSellUnlock: minUnlock(lockedS),
+      lotSells: new Set(lotSells.map((o) => o.group)).size,
+      remainder: sum(lotSells.filter((o) => o.lotSale?.state !== "sold"), (o) => o.remainder?.amount),
       proceeds: sum(sells.filter((o) => o.state === "revealed"), (o) => o.result?.amountOut),
       held: w.balance(b, pool.base.address),
     });

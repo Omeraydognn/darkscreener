@@ -11,7 +11,8 @@
 //! | GET  /v1/notes?from=&limit= | not ağacı yaprakları (istemci ağacı buradan kurar) |
 //! | GET  /v1/batches/{id}   | kapsül, özet, sonuçlar (7 gün sonra açmak için) |
 //! | POST /v1/orders         | { ciphertext, proof } → submitShieldedOrder |
-//! | POST /v1/lot-sells      | { ciphertext, lot } → submitLotSell (kilitli alımı yüzdeyle sat) |
+//! | POST /v1/lot-sells      | { ciphertext, lot } → submitLotSell (kilitli lotu yüzdeyle sat) |
+//! | GET  /v1/orders/{id}    | emrin durumu; lot satışıysa kalan lot, lotsa satışları |
 //! | POST /v1/withdrawals    | { proof, token, amount, spendBlinding, recipient } → withdraw |
 //! | GET  /v1/pools          | havuzlar + token bilgisi + proje meta verisi |
 //! | GET  /v1/pools/{id}/history | 7 gün gecikmeli "ghost chart": açılmış batch noktaları + kilitli batch'ler |
@@ -269,23 +270,43 @@ fn lot_json(l: &IDarkVault::LotUpdate) -> Value {
         "filled": l.filled,
         "remainderCommitment": l.remainderCommitment,
         "sealedRemainder": l.sealedRemainder,
+        // Kalan notun sonuç kimliği (dış ve iç katmanın AAD'si)
+        "remainderId": B256::from(dark_tee_core::reveal::remainder_id(&l.sellOrderId.0)),
     })
+}
+
+/// Bir emrin lot olarak durumu: onu satan emirler ve sonuçları.
+fn lot_sales(st: &crate::index::IndexState, id: &B256) -> Vec<Value> {
+    st.sells_of(id)
+        .iter()
+        .map(|sell| {
+            // pending: settle bekliyor; sold: satıldı (kalan kısım satış emrinin sonucunda); rejected: lot serbest
+            let state = match st.lot_update(sell).map(|(_, l)| l.filled) {
+                None => "pending",
+                Some(true) => "sold",
+                Some(false) => "rejected",
+            };
+            json!({ "orderId": sell, "state": state })
+        })
+        .collect()
 }
 
 /// Kullanıcının kendi emrinin durumu: hangi batch'te, sonucu, kilit ve (açıldıysa) K_b.
 /// Sonucun iç katmanı yalnızca emir sahibinin görüntüleme anahtarıyla açılır.
 async fn order_status(State(ctx): State<Arc<AppCtx>>, Path(id): Path<B256>) -> Result<Json<Value>, ApiError> {
     let st = ctx.index.state.read().await;
-    let submitted =
-        st.windows.iter().find_map(|(w, rec)| rec.orders.iter().find(|o| o.order_id == id).map(|o| (*w, o.lot)));
-    let Some((window, lot)) = submitted else {
+    let submitted = st.windows.iter().find_map(|(w, rec)| rec.orders.iter().any(|o| o.order_id == id).then_some(*w));
+    let Some(window) = submitted else {
         return Err(ApiError(StatusCode::NOT_FOUND, "order not indexed yet".into()));
     };
+    let lot = st.lot_sells.get(&id).copied();
+    let sales = lot_sales(&st, &id);
     for b in st.batches.values().filter(|b| b.window == window) {
         if let Some((i, r)) = b.results.iter().enumerate().find(|(_, r)| r.orderId == id) {
             let core = b.core_results();
             let leaves: Vec<[u8; 32]> = core.iter().map(|r| r.leaf()).collect();
             let kb = ctx.revealer.revealed.read().await.get(&b.batch_id).map(|r| format!("0x{}", hex::encode(r.kb)));
+            let remainder = b.lots.iter().find(|l| l.sellOrderId == id).map(lot_json);
             return Ok(Json(json!({
                 "orderId": id,
                 "window": window,
@@ -296,14 +317,19 @@ async fn order_status(State(ctx): State<Arc<AppCtx>>, Path(id): Path<B256>) -> R
                 "sealedResult": r.sealedResult,
                 "unlockTime": b.unlock_time,
                 "kb": kb,
-                // Lot satışı: satılan lot ve sonucu (kalan not, kilit açılınca kullanıcı çözer)
-                "lot": lot,
-                "lotUpdate": b.lots.iter().find(|l| l.sellOrderId == id).map(lot_json),
                 "merkleProof": dark_tee_core::batch::merkle_proof(&leaves, i).iter().map(|p| format!("0x{}", hex::encode(p))).collect::<Vec<_>>(),
+                // Kilitli lot satışıysa: satılan lot ve satılmayan kısmın (kalan lot) notu
+                "lot": lot,
+                "lotUpdate": remainder,
+                // Bu emrin sonucu bir lotsa: onu satan emirler
+                "lotSales": sales,
             })));
         }
     }
-    Ok(Json(json!({ "orderId": id, "window": window, "windowEnd": ctx.chain.window_end(window), "batchId": null, "lot": lot })))
+    Ok(Json(json!({
+        "orderId": id, "window": window, "windowEnd": ctx.chain.window_end(window), "batchId": null,
+        "lot": lot, "lotSales": sales,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -333,18 +359,19 @@ async fn submit_order(
 #[derive(Deserialize)]
 struct LotSellReq {
     ciphertext: Bytes,
+    /// Satılan lot: settle edilmiş, kilidi açılmamış bir alımın (ya da önceki lot satışının) emir kimliği
     lot: B256,
 }
 
-/// Kilidi açılmamış bir alımı miktarını bilmeden yüzdeyle satar. Not harcanmadığı için kanıt
-/// yoktur; sahipliği ciphertext içindeki `auth` kanıtlar (yalnızca enclave doğrular).
+/// Kilitli lot satışı. Kanıt yoktur: sahipliği enclave, şifreli gövdedeki açılışla doğrular
+/// (yanlışsa lot serbest kalır). Kontrat lotu satış settle edilene kadar kilitler.
 async fn submit_lot_sell(
     State(ctx): State<Arc<AppCtx>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(req): Json<LotSellReq>,
 ) -> Result<Json<Value>, ApiError> {
     ctx.limiter.check(peer.ip())?;
-    if req.ciphertext.len() != dark_tee_core::order::CIPHERTEXT_LEN {
+    if req.ciphertext.len() != dark_tee_core::order::CIPHERTEXT_LEN || req.ciphertext[0] != dark_tee_core::ecies::VERSION {
         return Err(bad("ciphertext length"));
     }
     let order_id = B256::from(keccak(&req.ciphertext));
