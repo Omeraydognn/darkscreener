@@ -1,10 +1,9 @@
-
 <div align="center">
 
 
 # darkscreener
 
-**Fiyatı gizli, projesi görünür: balinaların ve fenomenlerin manipüle edemediği, ZK + TEE ile çalışan gizli DEX.**
+**Hidden price, visible project: a confidential DEX powered by ZK + TEE that whales and influencers can't manipulate.**
 
 [![Monad Testnet](https://img.shields.io/badge/Monad-Testnet%2010143-7b8cff?style=flat-square)](https://testnet.monad.xyz)
 [![Rust](https://img.shields.io/badge/Rust-1.95-000000?style=flat-square&logo=rust)](tee-core/)
@@ -20,227 +19,227 @@
 darkscreener is a privacy-focused dark pool DEX running on Monad. By hiding live price, trading volume, and wallet activity, it structurally makes manipulation based on pump-and-dump, front-running, and wallet tracking impossible. Orders are encrypted in the browser and sent without address binding using zero-knowledge proof (ZK). They are matched in bulk at a single price in a trusted hardware environment (TEE). Results remain in a cryptographic time lock for 7 days. Investors make decisions based on the project's signed news and fundamentals, not on the chart.
 ---
 
-## 🎯 Problem & Çözüm
+## 🎯 Problem & Solution
 
 ### Problem
 
-- **Fiyat manipülasyonu:** Büyük sosyal medya hesapları bir token'ı pompalar ve canlı grafikte yükselişi gösterip takipçilerine sattırır. Canlı fiyat bu oyunun yakıtıdır.
-- **Front-running ve MEV:** Açık mempool ve açık emir defteri, büyük emirlerin önüne geçilmesini ve sandviç saldırılarını mümkün kılar.
-- **Cüzdan takibi:** Her alım-satım bir adrese bağlıdır. "Akıllı para" botları büyük cüzdanları kopyalar, yatırımcının stratejisi ifşa olur.
-- **Yanlış odak:** Kullanıcılar projenin ne yaptığına değil mum grafiğine bakarak karar verir.
+- **Price manipulation:** Large social media accounts pump a token, show the rally on the live chart, and get their followers to buy while they sell. The live price is the fuel of this game.
+- **Front-running and MEV:** A public mempool and a public order book make it possible to jump ahead of large orders and run sandwich attacks.
+- **Wallet tracking:** Every trade is tied to an address. "Smart money" bots copy large wallets and the investor's strategy is exposed.
+- **Wrong focus:** Users decide by looking at candlestick charts instead of at what the project actually does.
 
-### Çözüm
+### Solution
 
-- **Canlı fiyat yok:** Arayüzde canlı fiyat, canlı hacim ve yatırımcı listesi hiç yoktur. Fiyat geçmişi yalnızca **7 gün gecikmeli** gösterilir (`frontend/components/GhostChart.tsx`, `frontend/lib/ghost.ts`). Son 7 gün "karanlık bölge"dir.
-- **Sonuç 7 gün kilitli:** Kullanıcı kaç token aldığını da 7 gün sonra görür. Batch sonuçları ve özetleri **drand quicknet** ile zaman kilitlidir (`tee-core/src/timelock.rs`). Enclave dahil kimse erken açamaz.
-- **Şifreli emirler:** Emir tarayıcıda enclave anahtarına ECIES ile şifrelenir (`sdk/src/order.mjs`, `DSX-ECIES-v1`). Zincirde yalnızca 190 baytlık şifreli metin görünür (`CIPHERTEXT_LEN = 190`).
-- **Adressiz alım-satım:** Fonlar Poseidon notlarına yatırılır. Emirler ZK kanıtıyla (`circuits/src/spend.circom`) harcanır ve **relayer** tarafından gönderilir. Zincirde gönderen kullanıcı değil relayer'dır. Çekimler de gazsızdır ve yeni bir adrese yapılabilir.
-- **MEV'siz tek fiyat:** Bir pencere (`windowSeconds`) içindeki tüm emirler enclave'de **FM-AMM tekdüze clearing** ile aynı fiyattan eşleşir (`tee-core/src/clearing.rs`). Sıralama avantajı yoktur.
-- **Karar verisi = haber:** Projeler yalnızca kayıtlı anahtarlarıyla **imzalı haber** yayınlar (`relayer/src/news.rs`, EIP-191). Sahte duyuru reddedilir.
-- **Güven minimizasyonu:** Kontrat enclave'in imzasını, emir zincirini (`ordersHash`), havuz zincirini (`poolsHash`) ve durum zincirini doğrular. Relayer yalan söyleyemez. Settlement 2 gün durursa **kaçış kapağı** (`activateEscape`, `ESCAPE_DELAY = 2 days`) fonları enclave olmadan iade eder.
+- **No live price:** The UI has no live price, no live volume, and no list of holders. Price history is only shown **with a 7-day delay** (`frontend/components/GhostChart.tsx`, `frontend/lib/ghost.ts`). The last 7 days are the "dark zone".
+- **Results locked for 7 days:** Users also only learn how many tokens they bought after 7 days. Batch results and summaries are time-locked with **drand quicknet** (`tee-core/src/timelock.rs`). Nobody, including the enclave, can open them early.
+- **Encrypted orders:** Orders are encrypted in the browser to the enclave key with ECIES (`sdk/src/order.mjs`, `DSX-ECIES-v1`). Only a 190-byte ciphertext is visible on chain (`CIPHERTEXT_LEN = 190`).
+- **Addressless trading:** Funds are deposited into Poseidon notes. Orders spend them with a ZK proof (`circuits/src/spend.circom`) and are submitted by the **relayer**. On chain, the sender is the relayer, not the user. Withdrawals are gasless too and can go to a fresh address.
+- **Single price, no MEV:** All orders within a window (`windowSeconds`) are matched at the same price in the enclave using **FM-AMM uniform clearing** (`tee-core/src/clearing.rs`). Ordering gives no advantage.
+- **Decision data = news:** Projects publish **signed news** only with their registered keys (`relayer/src/news.rs`, EIP-191). Fake announcements are rejected.
+- **Trust minimization:** The contract verifies the enclave signature, the order chain (`ordersHash`), the pool chain (`poolsHash`), and the state chain. The relayer cannot lie. If settlement stalls for 2 days, an **escape hatch** (`activateEscape`, `ESCAPE_DELAY = 2 days`) returns funds without the enclave.
 
 ---
 
-## ⚙️ Sistem Mimarisi
+## ⚙️ System Architecture
 
-### Bileşenler
+### Components
 
-| Katman | Dizin | Sorumluluk |
+| Layer | Directory | Responsibility |
 |---|---|---|
-| **TEE çekirdeği** | `tee-core/` | Saf Rust: ECIES (`ecies.rs`), emir formatı v2 (`order.rs`), FM-AMM (`clearing.rs`), sealed state (`state.rs`), settlement özeti (`digest.rs`), drand tlock (`timelock.rs`), Poseidon notları (`note.rs`), `process_batch` (`batch.rs`). Ağ, saat, dosya veya TEE API'si içermez. |
-| **TEE sağlayıcı** | `tee-attest/` | `TeeProvider` trait'i: `key_seed`, `trusted_unix_time`, `attest`, `key_is_direct`. Sağlayıcılar: `LocalDev` (donanımsız geliştirme) ve `Oyster` (Marlin Oyster CVM; anahtar KMS'ten `127.0.0.1:1100`, attestation `127.0.0.1:1300`). |
-| **Enclave sunucusu** | `tee-server/` | Axum HTTP: `GET /health`, `GET /pubkey`, `GET /attestation`, `POST /process`. `ForkGuard` aynı `(batch_id, prev_state_hash)` için tek emir kümesi imzalar. `RELAYER_ADDRESSES` verilirse yalnızca relayer imzalı (`x-relayer-signature`) istekleri kabul eder. |
-| **Kontratlar** | `contracts/` | `DarkVault.sol` (shielded not ağacı, gizli emirler, pencereler, 16 shard'lı emir zincirleri, Merkle claim, kaçış kapağı, `createPoolFor`), `gateway/DarkUSD.sol` (1 dUSD = 1 $, yetkili basıcı), `gateway/MonGateway.sol` (MON → gizli dolar notu; çekimde anahtarsız CREATE2 kutusu + `redeem`), `launch/LaunchPad.sol` + `LaunchToken.sol` (izinsiz, sabit arzlı proje açılışı), `OwnerEnclaveRegistry.sol`, `SpendVerifier.sol` (Groth16), `lib/PoseidonTree.sol` (derinlik 20, 64 kök geçmişi), `lib/DarkPoolLib.sol`, `lib/DrandQuicknet.sol`, `lib/NoteLib.sol`. |
-| **ZK devresi** | `circuits/` | `spend.circom` → `Spend(20)`: üyelik kanıtı, nullifier, para üstü notu, harcama taahhüdü, `ctxHash` bağlaması (6.961 kısıt). `scripts/ceremony.sh` yerel Groth16 töreni. |
-| **Relayer** | `relayer/` | Rust + alloy: `index.rs` (yalnızca `finalized` blokları 100'lük parçalarla indeksler), `settler.rs` (enclave yanıtını kontratın tüm kontrolleriyle yerelde doğrular, sonra gönderir), `claimer.rs` (`returnRefunded` / `claimNote`), `reveal.rs` (drand beacon ile kapsülleri açar), `news.rs`, `api.rs`. |
-| **SDK** | `sdk/` | Tarayıcı ve Node istemcisi: `ecies.mjs`, `order.mjs`, `note.mjs` (poseidon-lite, `Tree`, `buildSpendInput`), `relayer.mjs`, `news.mjs`. E2E: `e2e/local.mjs`, `e2e/seed.mjs`, `e2e/post-news.mjs`. |
-| **Frontend** | `frontend/` | Next.js 16, çok sayfalı: `/` Keşfet, `/token/[poolId]` (ghost chart, tıklanabilir imzalı haberler, proje ayrıntıları, `TradeBox`: dolarla gizli alım / yüzdeyle gizli satış), `/portfolio` (bilinen nakit + "Bilinmiyor" pozisyonlar, kilit sayaçları, yedek), `/launch` (token oluşturma formu), `/guide`. `components/app/`: `AppProvider` (hesap, not defteri, otomatik yatırma), `Shell`, `FundsModal` (QR'lı yatırma adresi + gazsız çekim). `lib/wallet.ts`: `ShieldedWallet.fromSecret`. |
+| **TEE core** | `tee-core/` | Pure Rust: ECIES (`ecies.rs`), order format v2 / lot-sell v3 (`order.rs`), FM-AMM (`clearing.rs`), sealed state (`state.rs`), settlement digest (`digest.rs`), drand tlock (`timelock.rs`), Poseidon notes (`note.rs`), `process_batch` (`batch.rs`). No network, clock, filesystem, or TEE API. |
+| **TEE provider** | `tee-attest/` | `TeeProvider` trait: `key_seed`, `trusted_unix_time`, `attest`, `key_is_direct`. Providers: `LocalDev` (hardware-free development) and `Oyster` (Marlin Oyster CVM; key from KMS at `127.0.0.1:1100`, attestation at `127.0.0.1:1300`). |
+| **Enclave server** | `tee-server/` | Axum HTTP: `GET /health`, `GET /pubkey`, `GET /attestation`, `POST /process`. `ForkGuard` signs only one order set per `(batch_id, prev_state_hash)`. If `RELAYER_ADDRESSES` is set, it only accepts relayer-signed (`x-relayer-signature`) requests. |
+| **Contracts** | `contracts/` | `DarkVault.sol` (shielded note tree, confidential orders, windows, 16-shard order chains, Merkle claim, escape hatch, `createPoolFor`), `gateway/DarkUSD.sol` (1 dUSD = $1, authorized minter), `gateway/MonGateway.sol` (MON → confidential dollar note; keyless CREATE2 box + `redeem` on withdrawal), `launch/LaunchPad.sol` + `LaunchToken.sol` (permissionless, fixed-supply project launch), `OwnerEnclaveRegistry.sol`, `SpendVerifier.sol` (Groth16), `lib/PoseidonTree.sol` (depth 20, 64-root history), `lib/DarkPoolLib.sol`, `lib/DrandQuicknet.sol`, `lib/NoteLib.sol`. |
+| **ZK circuit** | `circuits/` | `spend.circom` → `Spend(20)`: membership proof, nullifier, change note, spend commitment, `ctxHash` binding (6,961 constraints). `scripts/ceremony.sh` runs a local Groth16 ceremony. |
+| **Relayer** | `relayer/` | Rust + alloy: `index.rs` (indexes only `finalized` blocks in chunks of 100), `settler.rs` (verifies the enclave response locally with every check the contract does, then submits), `claimer.rs` (`returnRefunded` / `claimNote`), `reveal.rs` (opens capsules with the drand beacon), `news.rs`, `price.rs`, `api.rs`. |
+| **SDK** | `sdk/` | Browser and Node client: `ecies.mjs`, `order.mjs`, `note.mjs` (poseidon-lite, `Tree`, `buildSpendInput`), `relayer.mjs`, `news.mjs`. E2E: `e2e/local.mjs`, `e2e/seed.mjs`, `e2e/post-news.mjs`. |
+| **Frontend** | `frontend/` | Next.js 16, multi-page: `/` Explore, `/token/[poolId]` (ghost chart, clickable signed news, project details, `TradeBox`: confidential buy in dollars / confidential sell by percentage), `/portfolio` (known cash + "Unknown" positions, lock countdowns, backup), `/launch` (token creation form), `/guide`. `components/app/`: `AppProvider` (account, note book, auto-deposit), `Shell`, `FundsModal` (deposit address with QR + gasless withdrawal). `lib/wallet.ts`: `ShieldedWallet.fromSecret`. English by default, Turkish optional (`lib/i18n.ts`). |
 
-### Uçtan uca akış
+### End-to-end flow
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor U as Kullanıcı
+    actor U as User
     participant F as Frontend (Next.js + ShieldedWallet)
     participant R as Relayer (Rust)
     participant V as DarkVault.sol (Monad)
     participant E as TEE Enclave (tee-server)
     participant D as drand quicknet
 
-    U->>F: Cüzdan imzası ile gizli hesap anahtarları türetilir
-    U->>V: deposit(token, amount, secretHash) ile not ağaca eklenir
-    U->>F: "250 dUSD ile NEBC al"
-    F->>F: Emir ECIES ile enclave anahtarına şifrelenir (190 bayt)
-    F->>F: Groth16 kanıtı üretilir (spend.circom, ctxHash = keccak(ciphertext))
-    F->>R: POST /v1/orders (ciphertext + kanıt)
-    R->>V: submitShieldedOrder(ciphertext, SpendProof), gönderen relayer
-    V->>V: Kanıt doğrulanır, nullifier harcanır, emir pencerenin shard zincirine eklenir
-    Note over V: Pencere kapanır (windowSeconds)
-    R->>V: finalized olayları indekslenir, ordersHash ve poolsHash karşılaştırılır
+    U->>F: Confidential account keys derived from a wallet signature
+    U->>V: deposit(token, amount, secretHash) adds a note to the tree
+    U->>F: "Buy NEBC with 250 dUSD"
+    F->>F: Order encrypted to the enclave key with ECIES (190 bytes)
+    F->>F: Groth16 proof generated (spend.circom, ctxHash = keccak(ciphertext))
+    F->>R: POST /v1/orders (ciphertext + proof)
+    R->>V: submitShieldedOrder(ciphertext, SpendProof), sender is the relayer
+    V->>V: Proof verified, nullifier spent, order appended to the window's shard chain
+    Note over V: Window closes (windowSeconds)
+    R->>V: Finalized events indexed, ordersHash and poolsHash compared
     R->>E: POST /process (x-relayer-signature)
-    E->>E: Emirler çözülür, FM-AMM tekdüze fiyat, sealed state güncellenir
-    E->>E: Sonuçlar ve özet drand turuna (şimdi + 7 gün) zaman kilitlenir
-    E-->>R: Settlement + enclave imzası
-    R->>R: Kontratın yapacağı tüm kontroller yerelde tekrarlanır
+    E->>E: Orders decrypted, FM-AMM uniform price, sealed state updated
+    E->>E: Results and summary time-locked to a drand round (now + 7 days)
+    E-->>R: Settlement + enclave signature
+    R->>R: Every check the contract will do is replayed locally
     R->>V: settleBatch(SettleParams, Result[])
-    V->>V: ecrecover, registry, durum zinciri, resultsRoot kontrolü
-    Note over V,D: 7 gün kilit
-    D-->>R: Kilit turunun beacon imzası yayınlanır
-    R->>R: Kapsül ve özet açılır (reveal.rs)
-    R->>V: claimNote ile sonuç notu ağaca alınır
-    F->>R: GET /v1/pools/{id}/history ile gecikmeli ghost chart
-    U->>F: Çek
-    F->>R: POST /v1/withdrawals (ZK kanıtı)
-    R->>V: withdraw(...) ile token yeni adrese gider, gazı relayer öder
+    V->>V: ecrecover, registry, state chain, resultsRoot checks
+    Note over V,D: 7-day lock
+    D-->>R: Beacon signature for the lock round is published
+    R->>R: Capsule and summary opened (reveal.rs)
+    R->>V: claimNote adds the result note to the tree
+    F->>R: GET /v1/pools/{id}/history for the delayed ghost chart
+    U->>F: Withdraw
+    F->>R: POST /v1/withdrawals (ZK proof)
+    R->>V: withdraw(...) sends tokens to a fresh address, relayer pays gas
 ```
 
-### Güvenlik modeli ve sabitler
+### Security model and constants
 
-| Parametre | Değer | Konum |
+| Parameter | Value | Location |
 |---|---|---|
-| Sonuç kilidi | `LOCK_SECONDS = 7 gün` (+ `UNLOCK_MARGIN_SECONDS = 900`) | `tee-core/src/timelock.rs`, `tee-core/src/batch.rs` |
-| Kilidin üst sınırı | `MAX_EXTRA_LOCK = 1 days` | `DarkVault.sol` |
-| Kaçış kapağı | `ESCAPE_DELAY = 2 days` | `DarkVault.sol` |
-| Emir boyutu | `CIPHERTEXT_LEN = 190` (128 bayt düz metin + 62 ECIES yükü) | `DarkVault.sol`, `tee-core/src/order.rs` |
-| Kapasite | 16 shard × `MAX_ORDERS_PER_SHARD = 16` / pencere; enclave `MAX_ORDERS_PER_BATCH = 2048` | `DarkVault.sol`, `tee-core/src/batch.rs` |
-| Not ağacı | Poseidon, derinlik 20, `ROOT_HISTORY = 64` | `contracts/src/lib/PoseidonTree.sol` |
-| Settlement özeti | chain, vault, batch, prev/new state hash, resultsRoot, unlockRound, capsule/summary hash, quoteToken, feeBps, ordersHash, poolsHash, reservesCommitment | `tee-core/src/digest.rs` ↔ `DarkPoolLib.settlementDigest` |
+| Result lock | `LOCK_SECONDS = 7 days` (+ `UNLOCK_MARGIN_SECONDS = 900`) | `tee-core/src/timelock.rs`, `tee-core/src/batch.rs` |
+| Upper bound on lock | `MAX_EXTRA_LOCK = 1 days` | `DarkVault.sol` |
+| Escape hatch | `ESCAPE_DELAY = 2 days` | `DarkVault.sol` |
+| Order size | `CIPHERTEXT_LEN = 190` (128-byte plaintext + 62 bytes ECIES overhead) | `DarkVault.sol`, `tee-core/src/order.rs` |
+| Capacity | 16 shards × `MAX_ORDERS_PER_SHARD = 16` per window; enclave `MAX_ORDERS_PER_BATCH = 2048` | `DarkVault.sol`, `tee-core/src/batch.rs` |
+| Note tree | Poseidon, depth 20, `ROOT_HISTORY = 64` | `contracts/src/lib/PoseidonTree.sol` |
+| Settlement digest | chain, vault, batch, prev/new state hash, resultsRoot, unlockRound, capsule/summary hash, quoteToken, feeBps, ordersHash, poolsHash, reservesCommitment | `tee-core/src/digest.rs` ↔ `DarkPoolLib.settlementDigest` |
 
-> **Güncel durum:** Enclave, Oyster CVM deploy'u yapılana kadar `TEE_PROVIDER=local` ile çalışır. Bu modda kriptografi, ZK ve zaman kilidi gerçektir, ancak donanım garantisi yoktur. Arayüzün **Güvenlik** sekmesi bunu açıkça gösterir. Oyster'a geçiş: [oyster/README.md](oyster/README.md).
-
----
-
-## 🚀 Temel Özellikler
-
-- **Ghost chart:** Yalnızca kilidi açılmış batch'lerden gelen mumlar, hacim ve 30 günlük TWAP gösterilir. Son 7 gün taralı "karanlık bölge"dir ve bir sonraki açılışa geri sayım içerir.
-- **Cüzdansız yatırma:** Gizli hesap tarayıcıda tek bir anahtardır (isteğe bağlı olarak cüzdan imzasından türetilir). Hesaba özel yatırma adresine (QR) MON gönderilir; `AppProvider` bunu `MonGateway.depositNative` ile otomatik olarak gizli dolar notuna çevirir (testnet demo kuru `usdPerMon`). Çekim MON ya da dUSD olarak, gazı relayer ödeyerek yapılır.
-- **Dolarla al, yüzdeyle sat:** Alımda yalnızca dolar tutarı, satışta yalnızca yüzde (%25/50/75/100/diğer) girilir; tutar gerekirse birden çok nota bölünür. Alınan miktar ve satış geliri 7 gün sonra görünür.
-- **Portföy:** Bilinen nakit, yatırılan ve satılan tutarlar; kilitli pozisyonlar "Bilinmiyor" ve açılışa kalan süreyle gösterilir.
-- **Token oluşturma:** `/launch` formu projeyi ayrıntılı ister; `LaunchPad.launch` sabit arzlı token basar ve MON'la başlangıç likiditesi koyarak gizli havuzu açar. Meta veri zincirdeki `metadataHash`'e bağlıdır; projeyi açan hesap arayüzden imzalı haber yayınlayabilir.
-- **Tarayıcıda ZK:** `ShieldedWallet` Groth16 kanıtını `snarkjs` ile tarayıcıda üretir (yerelde yaklaşık 0,4 sn). Not defteri tarayıcıda tutulur ve yedeği alınabilir.
-- **Gizli al/sat:** Emir tutarı, yönü ve havuz kimliği (`pool_id`) şifreli metnin içindedir. Tek vault birden çok havuzu yönetir, dolayısıyla zincirde hangi projenin alındığı bile görünmez.
-- **Otomatik iade:** Çözülemeyen ya da geçersiz emir `Refunded` olur. Harcanan tutar, kullanıcı hiçbir işlem yapmadan yeni bir gizli not olarak ağaca döner.
-- **Gazsız çekim:** `POST /v1/withdrawals`, `withdrawContext(recipient)` ile kanıta bağlanır. Fonlar bakiyesi sıfır olan yeni bir adrese gider.
-- **İmzalı proje haberleri:** `darkpool-news:v1` mesajı projenin kayıtlı `newsSigners` anahtarıyla imzalanır. Haberler grafikte ve "Gündem" şeridinde gösterilir. Projeler fiyata göre değil, son 24 saatteki haber sayısına göre sıralanır.
-- **Relayer'a güvensiz doğrulama:** `settler.rs` enclave yanıtını göndermeden önce kontratın kontrollerinin aynısıyla doğrular, böylece başarısız işleme gaz harcanmaz (Monad gaz limitini ücretlendirir).
-- **Fork koruması:** Aynı batch için farklı emir kümesi imzalanmaz (HTTP 409). Bu, "iki özetin farkından tek kullanıcının emrini bulma" saldırısını engeller.
-- **Kaçış kapağı:** `activateEscape`, `escapeReturnOrder`, `escapeReclaimPool`, `revealFinalReserves` ve `escapeWithdrawLiquidity`. Tuzlu `reservesCommitment` sayesinde LP'ler enclave olmadan çıkabilir.
-- **Sağlayıcıdan bağımsız TEE:** İş mantığı `tee-core` içinde saf Rust olarak durur. Oyster, Nitro veya Phala yalnızca `TeeProvider` implementasyonuyla değiştirilir. Clearing de `ClearingEngine` trait'i sayesinde FHE'ye taşınabilir.
+> **Current status:** Until the Oyster CVM deployment is done, the enclave runs with `TEE_PROVIDER=local`. In this mode the cryptography, ZK, and time lock are real, but there is no hardware guarantee. The UI's **Security** tab states this explicitly. Migrating to Oyster: [oyster/README.md](oyster/README.md).
 
 ---
 
-## 💻 Kurulum
+## 🚀 Key Features
 
-### Gereksinimler
+- **Ghost chart:** Only candles, volume, and the 30-day TWAP from unlocked batches are shown. The last 7 days are a hatched "dark zone" with a countdown to the next unlock.
+- **Walletless deposit:** The confidential account is a single key in the browser (optionally derived from a wallet signature). MON is sent to the account's own deposit address (QR); `AppProvider` automatically converts it into a confidential dollar note via `MonGateway.depositNative` (testnet demo rate `usdPerMon`). Withdrawals go out as MON or dUSD, with the relayer paying gas.
+- **Buy in dollars, sell by percentage:** Buying only asks for a dollar amount, selling only for a percentage (25/50/75/100%/other); the amount is split across several notes if needed. The amount bought and the sale proceeds become visible after 7 days.
+- **Portfolio:** Known cash, deposited and sold amounts; locked positions are shown as "Unknown" with the time left until unlock.
+- **Token launch:** The `/launch` form asks for detailed project information; `LaunchPad.launch` mints a fixed-supply token and opens the confidential pool with initial MON liquidity. Metadata is bound to the on-chain `metadataHash`; the account that launched the project can publish signed news from the UI.
+- **ZK in the browser:** `ShieldedWallet` generates the Groth16 proof in the browser with `snarkjs` (about 0.4 s locally). The note book is stored in the browser and can be backed up.
+- **Confidential buy/sell:** Order amount, direction, and pool ID (`pool_id`) are inside the ciphertext. A single vault manages many pools, so not even which project is being bought is visible on chain.
+- **Automatic refund:** Orders that can't be decrypted or are invalid become `Refunded`. The spent amount returns to the tree as a new confidential note without the user doing anything.
+- **Gasless withdrawal:** `POST /v1/withdrawals` is bound to the proof via `withdrawContext(recipient)`. Funds go to a fresh address with a zero balance.
+- **Signed project news:** A `darkpool-news:v1` message is signed with the project's registered `newsSigners` key. News appears on the chart and in the "Trending" ticker. Projects are ranked not by price but by the number of news posts in the last 24 hours.
+- **Trustless relayer verification:** `settler.rs` verifies the enclave response with exactly the same checks as the contract before submitting, so no gas is wasted on failing transactions (Monad charges for the gas limit).
+- **Fork protection:** A different order set is never signed for the same batch (HTTP 409). This blocks the "diff two summaries to isolate one user's order" attack.
+- **Escape hatch:** `activateEscape`, `escapeReturnOrder`, `escapeReclaimPool`, `revealFinalReserves`, and `escapeWithdrawLiquidity`. Thanks to the salted `reservesCommitment`, LPs can exit without the enclave.
+- **Provider-agnostic TEE:** Business logic lives in `tee-core` as pure Rust. Oyster, Nitro, or Phala are swapped by implementing `TeeProvider`. Clearing can also be moved to FHE thanks to the `ClearingEngine` trait.
 
-| Araç | Sürüm | Not |
+---
+
+## 💻 Installation
+
+### Requirements
+
+| Tool | Version | Note |
 |---|---|---|
 | Rust | 1.95+ | `rustup` |
-| Foundry | güncel | `forge`, `cast`, `anvil` |
-| Node.js | 20+ (24 ile test edildi) | `npm` |
-| jq, bc | herhangi | script'ler için |
-| Docker | isteğe bağlı | enclave imajı / Oyster |
+| Foundry | latest | `forge`, `cast`, `anvil` |
+| Node.js | 20+ (tested with 24) | `npm` |
+| jq, bc | any | for the scripts |
+| Docker | optional | enclave image / Oyster |
 
-`circom` 2.2.3'ü `scripts/setup.sh` kendisi kurar.
+`scripts/setup.sh` installs `circom` 2.2.3 itself.
 
-### Yerel geliştirme (anvil + gerçek enclave + gerçek relayer)
+### Local development (anvil + real enclave + real relayer)
 
 ```bash
-# 1) Klonla
+# 1) Clone
 git clone https://github.com/Omeraydognn/darkscreener.git
 cd darkscreener
 
-# 2) Git dışı bağımlılıklar: forge-std, OpenZeppelin, poseidon-solidity, circom, circuits/sdk npm paketleri
+# 2) Non-git dependencies: forge-std, OpenZeppelin, poseidon-solidity, circom, circuits/sdk npm packages
 ./scripts/setup.sh
 npm --prefix frontend install
 
-# 3) Derle
+# 3) Build
 cargo build --workspace
 (cd contracts && forge build)
 
-# 4) Testler (Rust, Solidity, Circom, SDK çapraz-dil)
+# 4) Tests (Rust, Solidity, Circom, SDK cross-language)
 cargo test --workspace
 (cd contracts && forge test)
 (cd circuits && npm test)
 (cd sdk && npm test)
 
-# 5) Uçtan uca: anvil + enclave + relayer + kullanıcı senaryosu
+# 5) End-to-end: anvil + enclave + relayer + user scenario
 ./scripts/e2e-local.sh
 
-# 6) Arayüz: 16 gün geriye alınmış yerel zincir + gerçek drand ile açılmış geçmiş.
-#    Bu komut açık kalır. frontend/.env.local dosyasını kendisi yazar.
+# 6) UI: local chain rewound 16 days + history unlocked with real drand.
+#    This command stays running. It writes frontend/.env.local itself.
 ./scripts/dev-stack.sh
 
-# 7) Ayrı bir terminalde arayüzü başlat, sonra http://localhost:3000 adresini aç
+# 7) In a separate terminal start the UI, then open http://localhost:3000
 npm --prefix frontend run dev
 ```
 
-### Monad testnet'e deploy
+### Deploying to Monad testnet
 
 ```bash
-# 1) Proje anahtarlarını oluştur (.testnet/, git dışı), deployer adresini gör
+# 1) Generate project keys (.testnet/, git-ignored) and show the deployer address
 ./scripts/testnet.sh status
 
-# 2) Deployer adresine Monad testnet musluğundan MON gönder (en az 3, önerilen 10+)
+# 2) Send MON from the Monad testnet faucet to the deployer address (at least 3, 10+ recommended)
 
-# 3) Kontratlar + 3 demo proje (NEBC, ORBR, VELS / dUSD); kalan MON relayer'a aktarılır
+# 3) Contracts + 3 demo projects (NEBC, ORBR, VELS / dUSD); remaining MON is moved to the relayer
 ./scripts/testnet.sh deploy
 
-# 4) Enclave + relayer (açık kalır). frontend/.env.local testnet'e göre yazılır
+# 4) Enclave + relayer (stays running). frontend/.env.local is written for testnet
 ./scripts/testnet.sh up
 
-# 5) Ayrı bir terminalde arayüzü MetaMask ile kullan
+# 5) In a separate terminal, use the UI with MetaMask
 npm --prefix frontend run dev
 
-# 6) İsteğe bağlı: demo projesi adına imzalı haber
-./scripts/testnet.sh news 1 "Başlık" "Metin"
+# 6) Optional: signed news on behalf of a demo project
+./scripts/testnet.sh news 1 "Title" "Body"
 ```
 
-### Ortam değişkenleri
+### Environment variables
 
-Script'ler bu değişkenleri kendisi yazar (`frontend/.env.local`, `.dev/relayer.env`, `.testnet/relayer.env`). Elle kurulum için adım adım:
+The scripts write these variables themselves (`frontend/.env.local`, `.dev/relayer.env`, `.testnet/relayer.env`). For a manual setup, step by step:
 
 **1. Enclave** (`tee-server`)
 
-| Değişken | Açıklama |
+| Variable | Description |
 |---|---|
-| `TEE_PROVIDER` | `local` (varsayılan) veya `oyster` |
-| `LOCAL_SEED_PATH` | `local`: kalıcı anahtar seed dosyası |
-| `OYSTER_KMS_PATH` | `oyster`: KMS türetme yolu (`darkpool-enclave-v1`) |
-| `RELAYER_ADDRESSES` | `/process` çağırabilecek relayer adresleri (herkese açık ağda zorunlu) |
-| `LISTEN_ADDR` | varsayılan `0.0.0.0:8080` |
+| `TEE_PROVIDER` | `local` (default) or `oyster` |
+| `LOCAL_SEED_PATH` | `local`: persistent key seed file |
+| `OYSTER_KMS_PATH` | `oyster`: KMS derivation path (`darkpool-enclave-v1`) |
+| `RELAYER_ADDRESSES` | relayer addresses allowed to call `/process` (required on a public network) |
+| `LISTEN_ADDR` | default `0.0.0.0:8080` |
 
 **2. Relayer** (`cp .env.relayer.example .env.relayer`)
 
-| Değişken | Açıklama |
+| Variable | Description |
 |---|---|
 | `RPC_URL` | `https://testnet-rpc.monad.xyz` |
-| `VAULT_ADDRESS`, `DEPLOY_BLOCK` | `contracts/deployments/10143.json` içinden |
-| `ENCLAVE_URL` | enclave adresi |
-| `RELAYER_PRIVATE_KEY` | yalnızca gaz için ayrı bir anahtar (**asla commit etmeyin**) |
+| `VAULT_ADDRESS`, `DEPLOY_BLOCK` | from `contracts/deployments/10143.json` |
+| `ENCLAVE_URL` | enclave address |
+| `RELAYER_PRIVATE_KEY` | a separate key used only for gas (**never commit it**) |
 | `LOG_CHUNK` / `POLL_MS` / `RATE_PER_MIN` | `100` / `1000` / `30` |
-| `PROJECTS_FILE` / `NEWS_FILE` | proje meta verisi ve imzalı haber kaydı |
+| `PROJECTS_FILE` / `NEWS_FILE` | project metadata and signed news store |
 
 **3. Frontend** (`frontend/.env.local`)
 
-| Değişken | Açıklama |
+| Variable | Description |
 |---|---|
-| `NEXT_PUBLIC_RPC_URL` | zincir RPC |
+| `NEXT_PUBLIC_RPC_URL` | chain RPC |
 | `NEXT_PUBLIC_RELAYER_URL` | relayer API |
-| `NEXT_PUBLIC_CHAIN_ID` | `10143` (testnet) veya `31337` (anvil) |
-| `NEXT_PUBLIC_VAULT` | `DarkVault` adresi |
-| `NEXT_PUBLIC_TEST_TOKENS` | `1`: demo token musluğu |
-| `NEXT_PUBLIC_DEV_CHAIN` | `1`: yalnızca anvil (geçici geliştirici cüzdanı) |
-| `NEXT_PUBLIC_EXPLORER_URL`, `NEXT_PUBLIC_CHAIN_NAME` | görünüm |
+| `NEXT_PUBLIC_CHAIN_ID` | `10143` (testnet) or `31337` (anvil) |
+| `NEXT_PUBLIC_VAULT` | `DarkVault` address |
+| `NEXT_PUBLIC_TEST_TOKENS` | `1`: demo token faucet |
+| `NEXT_PUBLIC_DEV_CHAIN` | `1`: anvil only (temporary developer wallet) |
+| `NEXT_PUBLIC_EXPLORER_URL`, `NEXT_PUBLIC_CHAIN_NAME` | display |
 
-### Format değişikliklerinde
+### When formats change
 
 ```bash
-# Enclave formatı değişirse Rust ↔ Solidity ↔ Circom ↔ JS fixture'ını yeniden üret
+# If the enclave format changes, regenerate the Rust ↔ Solidity ↔ Circom ↔ JS fixture
 ./scripts/gen-fixture.sh
 
-# Devre değişirse tören + verifier + fixture birlikte yenilenir
+# If the circuit changes, redo the ceremony + verifier + fixture together
 ./circuits/scripts/ceremony.sh && ./scripts/gen-fixture.sh
 ```
 
@@ -248,32 +247,32 @@ Script'ler bu değişkenleri kendisi yazar (`frontend/.env.local`, `.dev/relayer
 
 ## 🎥 MVP
 
-| | Bağlantı |
+| | Link |
 |---|---|
-| 🌐 Canlı uygulama | https://darkscreener.vercel.app/ |
+| 🌐 Live app | https://darkscreener.vercel.app/ |
 
 
-Deploy sonrasında tüm adresler `contracts/deployments/10143.json` dosyasına yazılır.
+After deployment, all addresses are written to `contracts/deployments/10143.json`.
 
-### Test kapsamı
+### Test coverage
 
-| Paket | Komut | İçerik |
+| Package | Command | Contents |
 |---|---|---|
-| `tee-core`, `tee-attest`, `tee-server`, `relayer` | `cargo test --workspace` | 46 test: ECIES, clearing, sealed state, drand vektörü (tur 1000), Poseidon circomlib vektörleri, fork koruması, relayer imza yetkisi |
-| `contracts` | `forge test` | 29 test: fixture ile Rust↔Solidity uyumu, korunum (kaçışta vault sıfıra iner), saldırılar, gaz profili, MON gateway ve launchpad |
-| `circuits` | `npm test` | 4 test: `Spend(20)` doğru/yanlış tanıklar |
-| `sdk` | `npm test` | 4 test: JS ↔ Rust ECIES, emir ve sonuç formatı |
-| E2E | `./scripts/e2e-local.sh` | MON yatırma → gizli alım → bozuk emrin iadesi → settle → 7 gün → claim → MON ve dUSD olarak gazsız çekim |
+| `tee-core`, `tee-attest`, `tee-server`, `relayer` | `cargo test --workspace` | 46 tests: ECIES, clearing, sealed state, drand vector (round 1000), circomlib Poseidon vectors, fork protection, relayer signature authorization |
+| `contracts` | `forge test` | 29 tests: Rust↔Solidity compatibility via fixture, conservation (vault drains to zero on escape), attacks, gas profile, MON gateway and launchpad |
+| `circuits` | `npm test` | 4 tests: valid/invalid witnesses for `Spend(20)` |
+| `sdk` | `npm test` | 4 tests: JS ↔ Rust ECIES, order and result format |
+| E2E | `./scripts/e2e-local.sh` | MON deposit → confidential buy → refund of a malformed order → settle → 7 days → claim → gasless withdrawal as MON and dUSD |
 
-Monad testnet'in anvil fork'unda ölçülen gaz (EVM fiyatlaması): `submitShieldedOrder` ≈ 1,15M, 2 emirli `settleBatch` ≈ 246k, `withdraw` ≈ 1,13M.
+Gas measured on an anvil fork of Monad testnet (EVM pricing): `submitShieldedOrder` ≈ 1.15M, `settleBatch` with 2 orders ≈ 246k, `withdraw` ≈ 1.13M.
 
 ---
 
-## 🔮 Gelecek Vizyonu
+## 🔮 Future Vision
 
-- **TEE'den FHE'ye:** Clearing şu an `ClearingEngine` trait'i arkasında TEE'de çalışıyor (`FmAmm`). Monad ekosisteminde bir FHE coprocessor (ör. şifreli toplama/çarpma sunan fhEVM tarzı çözümler) kullanılabilir hale geldiğinde, emir toplamları ve rezerv güncellemeleri şifreli olarak zincirde hesaplanabilir. Böylece donanım güveni tamamen kalkar. Bugünkü engel, FHE'de şifreli bölmenin (FM-AMM fiyatı `p = (y + 2B′)/(x + 2A′)`) pratik olmamasıdır. Hibrit model: toplama FHE'de, fiyat eşik şifre çözme ile.
-- **Donanım TEE'si:** Marlin Oyster CVM'e geçiş (`oyster/docker-compose.yml`). Enclave adresi imaj kimliğinden `oyster-cvm kms-derive` ile herkes tarafından doğrulanabilir. Registry'yi zincir üstü Nitro attestation doğrulamasına bağlamak da bu adıma dahil.
-- **Mainnet güvenliği:** Perpetual Powers of Tau + çok taraflı phase-2 töreni, `OwnerEnclaveRegistry` yerine multisig/DAO yönetimi ve bağımsız denetim.
-- **Şifreli limit emirleri:** Emir formatına (`order.rs` v2) fiyat sınırı eklenmesi.
-- **Sahiplere stake ödülü:** Proje token'ını tutan kullanıcılar, token'larını gizli not olarak stake edip ödül kazanabilecek. Ödül havuzu projenin hazinesinden ve işlem ücretlerinden (`feeBps`) beslenecek. Stake miktarı ve ödül payı enclave içinde hesaplanıp yeni gizli notlar olarak dağıtılacak, böylece kimin ne kadar tuttuğu gizli kalacak. Amaç, kısa vadeli al-sat yerine projeye uzun vadeli inanan yatırımcıyı ödüllendirerek pump-and-dump teşvikini daha da azaltmak.
-- **Kalıcı altyapı:** Relayer'ın sunucuya taşınması, çoklu relayer (`RELAYER_ADDRESSES` zaten liste alır) ve indeks anlık görüntüleri.
+- **From TEE to FHE:** Clearing currently runs in the TEE behind the `ClearingEngine` trait (`FmAmm`). Once an FHE coprocessor becomes available in the Monad ecosystem (e.g. fhEVM-style solutions offering encrypted addition/multiplication), order totals and reserve updates can be computed on chain in encrypted form, removing hardware trust entirely. Today's blocker is that encrypted division in FHE (the FM-AMM price `p = (y + 2B′)/(x + 2A′)`) is impractical. Hybrid model: aggregation in FHE, price via threshold decryption.
+- **Hardware TEE:** Migration to Marlin Oyster CVM (`oyster/docker-compose.yml`). Anyone can verify the enclave address from the image identity with `oyster-cvm kms-derive`. Binding the registry to on-chain Nitro attestation verification is part of this step.
+- **Mainnet security:** Perpetual Powers of Tau + a multi-party phase-2 ceremony, multisig/DAO governance instead of `OwnerEnclaveRegistry`, and an independent audit.
+- **Encrypted limit orders:** Adding a price limit to the order format (`order.rs` v2).
+- **Staking rewards for holders:** Users holding a project token will be able to stake it as a confidential note and earn rewards. The reward pool will be funded from the project treasury and trading fees (`feeBps`). Stake amounts and reward shares will be computed inside the enclave and distributed as new confidential notes, so who holds how much stays hidden. The goal is to reward investors who believe in the project long term instead of short-term flipping, further reducing the pump-and-dump incentive.
+- **Persistent infrastructure:** Moving the relayer to a server, multiple relayers (`RELAYER_ADDRESSES` already accepts a list), and index snapshots.
