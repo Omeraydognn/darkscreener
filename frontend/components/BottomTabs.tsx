@@ -1,7 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { BadgeCheck, CircleAlert, ExternalLink, Layers, Newspaper, ShieldCheck, Info as InfoIcon } from "lucide-react";
+import { BadgeCheck, ChevronRight, CircleAlert, ExternalLink, Layers, Megaphone, Newspaper, ShieldCheck, Info as InfoIcon } from "lucide-react";
+import { NewsModal } from "./app/NewsModal";
+import { useApp } from "./app/AppProvider";
 import type { History, Info, NewsItem, Pool } from "@/lib/api";
 import { config } from "@/lib/config";
 import { toPoints } from "@/lib/ghost";
@@ -68,6 +70,7 @@ export function BottomTabs({
 }
 
 function NewsFeed({ news, error, pool }: { news: NewsItem[] | undefined; error?: Error; pool: Pool | undefined }) {
+  const [open, setOpen] = useState<NewsItem | null>(null);
   if (error) return <div className="news-empty"><Newspaper size={24}/><strong>Gelişmeler için bağlantı bekleniyor</strong><p>Projenin yayınladığı haberler burada yer alır. Veri bağlantısı otomatik yeniden denenecek.</p></div>;
   if (!news)
     return (
@@ -79,30 +82,32 @@ function NewsFeed({ news, error, pool }: { news: NewsItem[] | undefined; error?:
     );
   if (!news.length)
     return (
-      <p className="p-6 text-center text-sm text-muted">
-        {pool?.project?.name ?? "Bu proje"} henüz haber yayınlamadı. Haberler yalnızca projenin kayıtlı anahtarıyla imzalanabilir.
-      </p>
+      <>
+        <PostNews pool={pool} />
+        <p className="p-6 text-center text-sm text-muted">
+          {pool?.project?.name ?? "Bu proje"} henüz haber yayınlamadı. Haberler yalnızca projenin kayıtlı anahtarıyla imzalanabilir.
+        </p>
+      </>
     );
   return (
-    <><div className="news-summary"><span><span className="status-dot"/> PROJEDEN GELİŞMELER</span><span>Proje anahtarıyla imzalı yayınlar</span></div><ul className="divide-y divide-line">
+    <><NewsModal item={open} pool={pool} onClose={() => setOpen(null)} /><PostNews pool={pool} /><div className="news-summary"><span><span className="status-dot"/> PROJEDEN GELİŞMELER</span><span>Proje anahtarıyla imzalı yayınlar</span></div><ul className="divide-y divide-line">
       {news.map((n) => (
-        <li key={n.signature} className="fade-in grid grid-cols-[4rem_1fr] gap-4 px-5 py-5">
-          <time dateTime={new Date(n.timestamp * 1000).toISOString()} className="num text-xs text-muted" title={dateFmt.format(n.timestamp * 1000)}>
-            {relTime(n.timestamp)}
-          </time>
-          <div>
-            <p className="font-medium">{n.title}</p>
-            {n.body && <p className="mt-0.5 leading-relaxed text-muted">{n.body}</p>}
-            <p className="mt-1 flex items-center gap-1 text-xs text-muted">
-              <BadgeCheck className="size-3.5 text-buy" aria-hidden />
-              Proje anahtarıyla imzalı · <span className="num">{shortAddr(n.signer)}</span>
-              {n.url && (
-                <a href={n.url} target="_blank" rel="noreferrer noopener" className="ml-2 inline-flex items-center gap-0.5 text-accent hover:underline">
-                  Kaynak <ExternalLink className="size-3" aria-hidden />
-                </a>
-              )}
-            </p>
-          </div>
+        <li key={n.signature} className="fade-in">
+          <button type="button" onClick={() => setOpen(n)} className="news-item grid w-full grid-cols-[4.5rem_1fr_auto] gap-4 px-5 py-5 text-left">
+            <time dateTime={new Date(n.timestamp * 1000).toISOString()} className="num text-xs text-muted" title={dateFmt.format(n.timestamp * 1000)}>
+              {relTime(n.timestamp)}
+            </time>
+            <div className="min-w-0">
+              <p className="font-medium">{n.title}</p>
+              {n.body && <p className="mt-0.5 line-clamp-2 leading-relaxed text-muted">{n.body}</p>}
+              <p className="mt-1 flex items-center gap-1 text-xs text-muted">
+                <BadgeCheck className="size-3.5 text-buy" aria-hidden />
+                Proje anahtarıyla imzalı · <span className="num">{shortAddr(n.signer)}</span>
+                {n.url && <span className="ml-2 inline-flex items-center gap-0.5 text-accent">Kaynak <ExternalLink className="size-3" aria-hidden /></span>}
+              </p>
+            </div>
+            <ChevronRight className="size-4 self-center text-muted" aria-hidden />
+          </button>
         </li>
       ))}
     </ul></>
@@ -155,25 +160,107 @@ function BatchTable({ pool, history }: { pool: Pool | undefined; history: Histor
   );
 }
 
+function PostNews({ pool }: { pool: Pool | undefined }) {
+  const { wallet } = useApp();
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string }>();
+  const mine = !!wallet && !!pool?.project?.newsSigners.some((s) => s.toLowerCase() === wallet.depositAddress.toLowerCase());
+  if (!mine || !pool) return null;
+  if (!open)
+    return (
+      <div className="flex items-center justify-between border-b border-line px-5 py-3 text-sm">
+        <span className="text-muted">Bu projenin haber anahtarı sende.</span>
+        <button type="button" className="btn-secondary" onClick={() => setOpen(true)}><Megaphone size={15} /> Haber yayınla</button>
+      </div>
+    );
+  return (
+    <form
+      className="grid gap-3 border-b border-line p-5"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        setBusy(true);
+        setMsg(undefined);
+        try {
+          await wallet!.postNews(pool.poolId, title.trim(), body.trim(), url.trim());
+          setMsg({ ok: true, text: "Haber imzalandı ve yayınlandı." });
+          setTitle("");
+          setBody("");
+          setUrl("");
+        } catch (err) {
+          setMsg({ ok: false, text: (err as Error).message });
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <label className="field"><span>Başlık</span><input maxLength={140} required value={title} onChange={(e) => setTitle(e.target.value)} /></label>
+      <label className="field"><span>Metin</span><textarea rows={4} maxLength={4000} value={body} onChange={(e) => setBody(e.target.value)} /></label>
+      <label className="field"><span>Kaynak bağlantısı (https, isteğe bağlı)</span><input type="url" pattern="https://.*" placeholder="https://" value={url} onChange={(e) => setUrl(e.target.value)} /></label>
+      {msg && <p className={msg.ok ? "text-sm text-buy" : "form-error"}>{msg.text}</p>}
+      <div className="flex gap-2">
+        <button type="button" className="btn-secondary" onClick={() => setOpen(false)}>Kapat</button>
+        <button type="submit" className="btn-primary" disabled={busy || !title.trim()}>{busy ? "İmzalanıyor…" : "İmzala ve yayınla"}</button>
+      </div>
+    </form>
+  );
+}
+
+const LINKS: [keyof NonNullable<Pool["project"]>, string][] = [
+  ["website", "Web sitesi"],
+  ["twitter", "X / Twitter"],
+  ["telegram", "Telegram"],
+  ["discord", "Discord"],
+  ["github", "GitHub"],
+  ["whitepaper", "Whitepaper"],
+];
+
 function ProjectTab({ pool }: { pool: Pool | undefined }) {
   if (!pool) return null;
   const p = pool.project;
+  const sections: [string, string | undefined][] = [
+    ["Hakkında", p?.description],
+    ["Ekip", p?.team],
+    ["Yol haritası", p?.roadmap],
+    ["Token dağılımı", p?.tokenomics],
+  ];
+  const links = LINKS.filter(([k]) => typeof p?.[k] === "string" && /^https:\/\//.test(p[k] as string));
   return (
-    <div className="grid gap-6 p-4 md:grid-cols-2">
-      <div>
-        <h2 className="text-base font-semibold">{p?.name ?? pool.base.name}</h2>
-        <p className="mt-1 leading-relaxed text-muted">{p?.description || "Proje açıklaması eklenmemiş."}</p>
+    <div className="grid gap-6 p-5 md:grid-cols-[1fr_18rem]">
+      <div className="grid gap-5">
+        <div>
+          <h2 className="text-lg font-semibold">{p?.name ?? pool.base.name}</h2>
+          {p?.category && <p className="mt-1 text-xs uppercase tracking-wide text-accent">{p.category}</p>}
+        </div>
+        {sections.filter(([, v]) => v).map(([h, v]) => (
+          <section key={h}>
+            <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-muted">{h}</h3>
+            <p className="whitespace-pre-line leading-relaxed">{v}</p>
+          </section>
+        ))}
+        {!p?.description && <p className="text-muted">Proje açıklaması eklenmemiş.</p>}
+        {links.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {links.map(([k, label]) => (
+              <a key={k} className="btn-secondary" href={p![k] as string} target="_blank" rel="noreferrer noopener">{label} <ExternalLink size={13} /></a>
+            ))}
+          </div>
+        )}
       </div>
-      <dl className="grid grid-cols-[9rem_1fr] gap-y-1.5 text-xs">
+      <dl className="grid h-max grid-cols-[8rem_1fr] gap-y-2 rounded-lg border border-line p-4 text-xs">
         <dt className="text-muted">Token</dt>
-        <dd className="num">{pool.base.symbol} · {shortAddr(pool.base.address)}</dd>
-        <dt className="text-muted">Quote</dt>
-        <dd className="num">{pool.quote.symbol} · {shortAddr(pool.quote.address)}</dd>
+        <dd className="num break-all">{pool.base.symbol} · {shortAddr(pool.base.address)}</dd>
+        <dt className="text-muted">Karşılık</dt>
+        <dd className="num">{pool.quote.symbol} (1 $)</dd>
         <dt className="text-muted">İlk likidite</dt>
         <dd className="num">
-          {fmtNum(units(pool.initialLiquidity.base, pool.base.decimals ?? 18))} {pool.base.symbol} +{" "}
-          {fmtNum(units(pool.initialLiquidity.quote, pool.quote.decimals ?? 6))} {pool.quote.symbol}
+          {fmtNum(units(pool.initialLiquidity.base, pool.base.decimals ?? 18))} {pool.base.symbol} + {fmtNum(units(pool.initialLiquidity.quote, pool.quote.decimals ?? 6))} $
         </dd>
+        <dt className="text-muted">Açılış fiyatı</dt>
+        <dd className="num">{fmtPrice(units(pool.initialLiquidity.quote, pool.quote.decimals ?? 6) / units(pool.initialLiquidity.base, pool.base.decimals ?? 18))} $</dd>
         <dt className="text-muted">Havuz açılışı</dt>
         <dd className="num">{dateFmt.format(pool.createdAt * 1000)}</dd>
         <dt className="text-muted">Haber imzacıları</dt>

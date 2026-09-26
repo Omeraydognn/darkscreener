@@ -113,13 +113,13 @@ export type Signer = { address: `0x${string}`; client: WalletClient; account: Ac
 
 // ---------------------------------------------------------------- hesap anahtarı
 
-const SECRET_KEY = `darkscreener:secret:${config.chainId}:${config.vault.toLowerCase()}`;
+export const ACCOUNT_KEY = `darkscreener:secret:${config.chainId}:${config.vault.toLowerCase()}`;
 const N = BigInt("0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
 
 export const accountStore = {
   load(): Hex | null {
     try {
-      const v = localStorage.getItem(SECRET_KEY);
+      const v = localStorage.getItem(ACCOUNT_KEY);
       return v && /^0x[0-9a-f]{64}$/i.test(v) ? (v as Hex) : null;
     } catch {
       return null;
@@ -127,7 +127,7 @@ export const accountStore = {
   },
   save(secret: Hex) {
     if (!/^0x[0-9a-f]{64}$/i.test(secret)) throw new Error("Geçersiz gizli anahtar (0x + 64 hex karakter)");
-    localStorage.setItem(SECRET_KEY, secret.toLowerCase());
+    localStorage.setItem(ACCOUNT_KEY, secret.toLowerCase());
     window.dispatchEvent(new Event("darkscreener:storage"));
   },
   create(): Hex {
@@ -136,7 +136,7 @@ export const accountStore = {
     return secret;
   },
   clear() {
-    localStorage.removeItem(SECRET_KEY);
+    localStorage.removeItem(ACCOUNT_KEY);
     window.dispatchEvent(new Event("darkscreener:storage"));
   },
 };

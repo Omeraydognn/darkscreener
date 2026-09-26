@@ -15,7 +15,7 @@ export function TopTicker({ pools, active }: { pools: Pool[] | undefined; active
       {ranked.map((p, i) => (
         <Link
           key={p.poolId}
-          href={`/p/${p.poolId}`}
+          href={`/token/${p.poolId}`}
           className={`flex h-8 shrink-0 items-center gap-2 rounded-md px-3 text-sm hover:bg-panel-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
             p.poolId === active ? "bg-panel-2" : ""
           }`}

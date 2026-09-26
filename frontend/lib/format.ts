@@ -53,3 +53,23 @@ export function duration(seconds: number): string {
 }
 
 export const dateFmt = new Intl.DateTimeFormat("tr-TR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+
+const usdFmt = new Intl.NumberFormat("tr-TR", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/** dUSD ham tutarı (6 ondalık) → "$1.234,56" */
+export function fmtUsd(raw: bigint | string | number | null | undefined): string {
+  if (raw == null) return "—";
+  const v = typeof raw === "number" ? raw : units(typeof raw === "bigint" ? raw : BigInt(raw), 6);
+  return usdFmt.format(v);
+}
+
+/** Token ham tutarı → "12.345,67" */
+export function fmtToken(raw: bigint | string, decimals = 18): string {
+  return plain.format(units(typeof raw === "bigint" ? raw : BigInt(raw), decimals));
+}
+
+/** wei → "1,2345 MON" */
+export function fmtMon(raw: bigint | string, symbol = "MON"): string {
+  const v = units(typeof raw === "bigint" ? raw : BigInt(raw), 18);
+  return `${v.toLocaleString("tr-TR", { maximumFractionDigits: 4 })} ${symbol}`;
+}

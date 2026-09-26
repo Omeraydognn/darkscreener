@@ -1,9 +1,7 @@
-import { notFound } from "next/navigation";
-import { Terminal } from "@/components/Terminal";
+import { redirect } from "next/navigation";
 
-export default async function PoolPage({ params }: PageProps<"/p/[poolId]">) {
+/** Eski adres: /p/<id> → /token/<id> */
+export default async function Page({ params }: PageProps<"/p/[poolId]">) {
   const { poolId } = await params;
-  const id = Number(poolId);
-  if (!Number.isInteger(id) || id <= 0) notFound();
-  return <Terminal key={id} poolId={id} />;
+  redirect(`/token/${poolId}`);
 }

@@ -3,8 +3,6 @@
 
 <div align="center">
 
-<!-- LOGO: docs/logo.png (placeholder) -->
-<img src="docs/logo.png" alt="darkscreener logosu" width="96" height="96" />
 
 # darkscreener
 
@@ -20,6 +18,8 @@
 
 </div>
 
+---
+darkscreener is a privacy-focused dark pool DEX running on Monad. By hiding live price, trading volume, and wallet activity, it structurally makes manipulation based on pump-and-dump, front-running, and wallet tracking impossible. Orders are encrypted in the browser and sent without address binding using zero-knowledge proof (ZK). They are matched in bulk at a single price in a trusted hardware environment (TEE). Results remain in a cryptographic time lock for 7 days. Investors make decisions based on the project's signed news and fundamentals, not on the chart.
 ---
 
 ## 🎯 Problem & Çözüm
@@ -248,7 +248,7 @@ Script'ler bu değişkenleri kendisi yazar (`frontend/.env.local`, `.dev/relayer
 
 | | Bağlantı |
 |---|---|
-| 🌐 Canlı uygulama | `[CANLI_LINK]` |
+| 🌐 Canlı uygulama | https://darkscreener.vercel.app/ |
 
 
 Deploy sonrasında tüm adresler `contracts/deployments/10143.json` dosyasına yazılır.

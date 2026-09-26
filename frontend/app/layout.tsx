@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import "./app.css";
+import { AppProvider } from "@/components/app/AppProvider";
+import { Shell } from "@/components/app/Shell";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin", "latin-ext"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin", "latin-ext"] });
@@ -20,7 +23,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         {/* Tema ilk boyamadan önce uygulanır (yanıp sönme olmasın); varsayılan açık tema. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
       </head>
-      <body className="h-full bg-bg font-sans text-sm text-fg">{children}</body>
+      <body className="h-full bg-bg font-sans text-sm text-fg"><AppProvider><Shell>{children}</Shell></AppProvider></body>
     </html>
   );
 }
