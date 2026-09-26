@@ -38,13 +38,15 @@ export class RelayerClient {
     return this.#req(`/v1/batches/${id}`);
   }
 
-  submitOrder(ciphertext, proof) {
-    return this.#req("/v1/orders", { ciphertext, proof });
+  /** `lotKeyHash` verilirse sonuç kilitliyken yüzdeyle satılabilir; kanıt `orderContext(ct, lotKeyHash)`'e bağlı olmalı. */
+  submitOrder(ciphertext, proof, lotKeyHash) {
+    return this.#req("/v1/orders", { ciphertext, proof, ...(lotKeyHash ? { lotKeyHash } : {}) });
   }
 
-  /** Kilitli lotu yüzdeyle sat: `lot` = satılan alımın (ya da önceki lot satışının) emir kimliği. */
-  submitLotSell(ciphertext, lot) {
-    return this.#req("/v1/lot-sells", { ciphertext, lot });
+  /** Kilitli lotu yüzdeyle sat: `lot` = satılan alımın (ya da önceki lot satışının) emir kimliği,
+   * `lotKey` = lotun anahtar zincirindeki bir sonraki halka (`nextLotKey`). */
+  submitLotSell(ciphertext, lot, lotKey) {
+    return this.#req("/v1/lot-sells", { ciphertext, lot, lotKey });
   }
 
   /** Emrin durumu; lot satışıysa `lotUpdate` (kalan lot), lotsa `lotSales`. */

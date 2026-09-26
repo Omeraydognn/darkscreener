@@ -75,6 +75,9 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
         uint64 window;
         bool done; // sonuç notu eklendi / iade edildi
         uint256 spendCommitment;
+        /// @notice Lot satış anahtarı zincirinin başı: bir sonraki satış `keccak256(key) == lotKey` olan
+        ///         anahtarı açmalı. 0 = lot olarak satılamaz (anahtarsız gönderilmiş emir).
+        bytes32 lotKey;
     }
 
     struct Window {
@@ -243,6 +246,7 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
     error InvalidReveal();
     error LotUnavailable();
     error LotMismatch();
+    error LotKeyInvalid();
     error NotRevealed();
 
     constructor(
@@ -426,11 +430,32 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
         nonReentrant
         returns (bytes32 orderId)
     {
+        orderId = _submitOrder(ciphertext, p, bytes32(0), keccak256(ciphertext));
+    }
+
+    /// @notice `submitShieldedOrder` + lot satış anahtarı. Sonucu kilitliyken yalnızca anahtar zincirini
+    ///         bilen (emir sahibi) satabilir: `lotKeyHash = keccak256^n(seed)`, her satış bir önceki
+    ///         halkayı açar. Kanıt `lotKeyHash`'e de bağlıdır (ctxHash = keccak(ciphertext || lotKeyHash)):
+    ///         mempool'dan kopyalayan biri anahtarı değiştiremez.
+    function submitShieldedOrderWithLotKey(bytes calldata ciphertext, SpendProof calldata p, bytes32 lotKeyHash)
+        external
+        live
+        nonReentrant
+        returns (bytes32 orderId)
+    {
+        if (lotKeyHash == bytes32(0)) revert LotKeyInvalid();
+        orderId = _submitOrder(ciphertext, p, lotKeyHash, keccak256(abi.encodePacked(ciphertext, lotKeyHash)));
+    }
+
+    function _submitOrder(bytes calldata ciphertext, SpendProof calldata p, bytes32 lotKeyHash, bytes32 ctx)
+        internal
+        returns (bytes32 orderId)
+    {
         if (ciphertext.length != CIPHERTEXT_LEN || ciphertext[0] != 0x01) revert BadCiphertext();
         orderId = keccak256(ciphertext);
         if (orders[orderId].window != 0) revert DuplicateOrder();
 
-        _spend(p, NoteLib.toField(orderId));
+        _spend(p, NoteLib.toField(ctx));
 
         uint64 window = currentWindow();
         uint256 shard = uint256(orderId) % SHARDS;
@@ -440,7 +465,8 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
 
         w.chains[shard] = DarkPoolLib.orderChainStep(w.chains[shard], orderId, p.spendCommitment);
         w.counts[shard] = index + 1;
-        orders[orderId] = Order({window: window, done: false, spendCommitment: p.spendCommitment});
+        orders[orderId] =
+            Order({window: window, done: false, spendCommitment: p.spendCommitment, lotKey: lotKeyHash});
 
         // forge-lint: disable-next-line(unsafe-typecast) shard < 16, index < 16
         emit OrderSubmitted(window, orderId, uint8(shard), uint32(index), p.spendCommitment, ciphertext);
@@ -449,16 +475,26 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
     /// @notice Kilidi açılmamış bir alımı ("lot") miktarını bilmeden yüzdeyle sat. Ciphertext yüzdeyi ve
     ///         sahiplik açılışını taşır; miktarı yalnızca enclave, lotun sonucundaki enclave notundan okur.
     ///         Lot, satış settle edilene kadar kilitlenir (aynı lot iki kez satılamaz, claim edilemez).
-    function submitLotSell(bytes calldata ciphertext, bytes32 lot) external live nonReentrant returns (bytes32 orderId) {
+    /// @dev `lotKey`, lotun anahtar zincirindeki bir sonraki halka ve yalnızca emir sahibi bilir: başkası
+    ///      geçersiz bir satışla lotu kilitleyemez. Açılan halka zincirin yeni başı olur (satış reddedilse
+    ///      bile); görülen bir anahtar ikinci kez kullanılamaz. Kalan lot (satış emri) aynı zincirle sürer.
+    function submitLotSell(bytes calldata ciphertext, bytes32 lot, bytes32 lotKey)
+        external
+        live
+        nonReentrant
+        returns (bytes32 orderId)
+    {
         if (ciphertext.length != CIPHERTEXT_LEN || ciphertext[0] != 0x01) revert BadCiphertext();
         orderId = keccak256(ciphertext);
         if (orders[orderId].window != 0) revert DuplicateOrder();
         Order storage l = orders[lot];
+        if (l.lotKey == bytes32(0) || keccak256(abi.encodePacked(lotKey)) != l.lotKey) revert LotKeyInvalid();
         // Lot, settle edilmiş ve henüz claim edilmemiş bir emrin sonucu olmalı.
         if (l.window == 0 || l.window > lastSettledWindow || l.done || lotState[lot] != LOT_FREE) {
             revert LotUnavailable();
         }
         lotState[lot] = LOT_PENDING;
+        l.lotKey = lotKey;
 
         uint64 window = currentWindow();
         uint256 shard = uint256(orderId) % SHARDS;
@@ -469,7 +505,7 @@ contract DarkVault is Ownable2Step, ReentrancyGuardTransient {
         w.chains[shard] = DarkPoolLib.orderChainStep(w.chains[shard], orderId, uint256(lot));
         w.counts[shard] = index + 1;
         w.lotSellCount += 1;
-        orders[orderId] = Order({window: window, done: false, spendCommitment: uint256(lot)});
+        orders[orderId] = Order({window: window, done: false, spendCommitment: uint256(lot), lotKey: lotKey});
         lotSells[orderId] = LotSell({lot: lot, window: window, settled: false});
 
         // forge-lint: disable-next-line(unsafe-typecast) shard < 16, index < 16

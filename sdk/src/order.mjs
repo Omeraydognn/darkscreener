@@ -60,9 +60,43 @@ export async function encryptOrder(enclavePub, chainId, vault, order) {
   return ct;
 }
 
-/** Kanıtın bağlandığı bağlam: keccak256(ciphertext) mod p (kontrat ile aynı). */
-export function orderContext(ciphertext) {
-  return BigInt(keccak256(ciphertext)) % SNARK_FIELD;
+/**
+ * Kanıtın bağlandığı bağlam (kontrat ile aynı): keccak256(ciphertext) mod p; lot anahtarıyla
+ * gönderilen emirde keccak256(ciphertext || lotKeyHash) mod p (kopyalayan anahtarı değiştiremez).
+ */
+export function orderContext(ciphertext, lotKeyHash) {
+  const pre = lotKeyHash ? concatBytes(ciphertext, hexToBytes(lotKeyHash)) : ciphertext;
+  return BigInt(keccak256(pre)) % SNARK_FIELD;
+}
+
+function concatBytes(a, b) {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+/** Bir lotun en fazla bu kadar kez (kalanlar dahil) kilitliyken satılabilmesi için zincir uzunluğu. */
+export const LOT_KEY_CHAIN = 32;
+
+/**
+ * Lot anahtar zinciri (DarkVault `submitLotSell`): `lotKeyAt(seed, i) = keccak256^(N - i)(seed)`.
+ * `lotKeyAt(seed, 0)` alımda zincire yazılır; i. satış `lotKeyAt(seed, i)`'yi açar
+ * (`keccak256(lotKeyAt(seed, i)) == lotKeyAt(seed, i - 1)`). Açılan anahtardan sonrakini kimse bulamaz.
+ */
+export function lotKeyAt(seed, i) {
+  if (!(i >= 0 && i <= LOT_KEY_CHAIN)) throw new Error("lot key index out of range");
+  let k = seed;
+  for (let j = i; j < LOT_KEY_CHAIN; j++) k = keccak256(k);
+  return k;
+}
+
+/** Zincirdeki başa (`orders(lot).lotKey`) göre açılacak bir sonraki anahtar; zincir bittiyse null. */
+export function nextLotKey(seed, head) {
+  for (let i = 0; i < LOT_KEY_CHAIN; i++) {
+    if (lotKeyAt(seed, i).toLowerCase() === head.toLowerCase()) return lotKeyAt(seed, i + 1);
+  }
+  return null;
 }
 
 /**
