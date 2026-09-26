@@ -1,6 +1,6 @@
 # Brand — darkscreener
 
-_Status: active_ (yön: özgün araştırma terminali; ışık geçiren çaydan ilham alan dumanlı yüzeyler ve amber vurgular)
+_Status: active_ (yön: özgün araştırma terminali; siyah yüzeyler ve canlı kırmızı vurgular)
 
 ## İlke
 Fiyat gizli, proje görünür. Arayüz canlı fiyat / işlem akışı göstermez; canlı olan tek şey
@@ -10,17 +10,17 @@ açıkça "karanlık" gösterilir.
 ## Palet (yalnızca koyu tema — terminal ürünü)
 | Token | Değer | Kullanım |
 |---|---|---|
-| `--bg` | `#121110` | sayfa |
-| `--panel` | `#1a1815` | panel/kart |
-| `--panel-2` | `#25211c` | iç kart, hover |
-| `--line` | `#3c342b` | kenarlık |
-| `--fg` | `#f4eee5` | ana metin |
-| `--muted` | `#b8aa99` | ikincil metin (panel üzerinde ≥ 4.5:1) |
+| `--bg` | `#0a0a0a` | sayfa |
+| `--panel` | `#131313` | panel/kart |
+| `--panel-2` | `#1d1d1d` | iç kart, hover |
+| `--line` | `#2e2e2e` | kenarlık |
+| `--fg` | `#f5f5f5` | ana metin |
+| `--muted` | `#a8a8a8` | ikincil metin (panel üzerinde ≥ 4.5:1) |
 | `--buy` | `#89b9a2` | alım / artış |
-| `--sell` | `#d68571` | satım / düşüş |
-| `--accent` | `#dba96a` | amber marka vurgusu, odak halkası |
-| `--locked` | `#85827d` | gri temsili mumlar |
-| `--warn` | `#dba96a` | uyarı |
+| `--sell` | `#ff6b7a` | satım / düşüş |
+| `--accent` | `#ff1f3d` | canlı kırmızı marka vurgusu, odak halkası |
+| `--locked` | `#7c7c7c` | gri temsili mumlar |
+| `--warn` | `#f5b83d` | uyarı |
 
 ## Tipografi
 Geist Sans (arayüz), Geist Mono + `tabular-nums` (tüm sayılar, adresler).

@@ -1,0 +1,16 @@
+# Marlin Oyster CVM içinde çalışan enclave. Bu dosyanın içeriği image id'nin parçasıdır:
+# herhangi bir değişiklik = yeni image id = yeni enclave anahtarı (registry'de yeniden kayıt).
+#
+# IMAGE: kendi registry'nize push ettiğiniz imajın DIGEST'li hali (etiket değil!), linux/amd64.
+# RELAYER_ADDRESSES: /process'i çağırabilecek relayer adres(ler)i (herkese açık, gizli değil).
+services:
+  enclave:
+    image: REPLACE_WITH_IMAGE@sha256:REPLACE_WITH_DIGEST
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      TEE_PROVIDER: oyster
+      OYSTER_KMS_PATH: darkpool-enclave-v1
+      RELAYER_ADDRESSES: REPLACE_WITH_RELAYER_ADDRESS
+      LISTEN_ADDR: 0.0.0.0:8080
+      RUST_LOG: info
