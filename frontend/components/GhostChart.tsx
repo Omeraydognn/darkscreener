@@ -108,7 +108,7 @@ export function GhostChart({ pool, history, error, news, newsError }: {
   const last = data?.pts.at(-1);
   const selected = selectedDay === null ? [] : dayNews(selectedDay);
   return <section className="chart-section" aria-label="Gecikmeli fiyat ve haber zaman çizelgesi">
-    <div className="chart-heading"><div><span className="mini-eyebrow">MARKET / INTELLIGENCE</span><h3>Piyasanın geçmişi. Projenin bugünü.</h3></div><span><Clock3 size={13}/> 7 GÜN GECİKMELİ</span></div>
+    <div className="chart-heading"><div><span className="mini-eyebrow">MARKET / INTELLIGENCE</span><h3>Piyasanın geçmişi. Projenin bugünü.</h3></div><div className="flex items-center gap-2">{data?.pts.some(p => p.demo) && <span className="demo-badge" title="Bu proje demo: testnet öncesi grafik örnek veridir, gerçek işlem değildir. Gerçek fiyatlar ilk işlemlerden 7 gün sonra açılır.">DEMO GEÇMİŞ</span>}<span className="chart-delay"><Clock3 size={13}/> 7 GÜN GECİKMELİ</span></div></div>
     <div className="chart-toolbar"><div role="group" aria-label="Zaman aralığı">{FRAMES.map(f => <button key={f.sec} aria-pressed={frame === f.sec} onClick={() => setFrame(f.sec)}>{f.label}</button>)}<button aria-pressed={showTwap} onClick={() => setShowTwap(!showTwap)}>TWAP</button></div><span>{last ? `${fmtPrice(last.price)} ${pool?.quote.symbol} · geçmiş fiyat` : "Geçmiş fiyat bekleniyor"}</span></div>
     <div className="unified-chart">
       <div ref={box} className="unified-canvas"/>

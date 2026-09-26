@@ -52,6 +52,9 @@ pub struct AppCtx {
     pub revealer: Arc<Revealer>,
     pub news: Arc<NewsStore>,
     pub tokens: tokio::sync::Mutex<HashMap<Address, Value>>,
+    /// Yalnızca demo projeler: testnet öncesi örnek grafik noktaları (`demo: true`), bkz.
+    /// sdk/e2e/gen-demo-history.mjs. Gerçek açılmış noktalardan önceki zamana eklenir.
+    pub demo_history: HashMap<u32, Vec<Value>>,
 }
 
 pub fn router(ctx: Arc<AppCtx>) -> Router {
@@ -68,7 +71,8 @@ pub fn router(ctx: Arc<AppCtx>) -> Router {
         .route("/v1/news", get(news_list).post(news_post))
         .route("/v1/projects", post(register_project))
         // Tarayıcıdaki frontend farklı origin'den çağırır. Kimlik bilgisi (cookie) kullanılmaz.
-        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
+        // allow_private_network: herkese açık bir siteden (ör. Vercel) yerel relayer'a gelen isteklerin ön kontrolü
+        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any).allow_private_network(true))
         .with_state(ctx)
 }
 
@@ -209,6 +213,10 @@ async fn info(State(ctx): State<Arc<AppCtx>>) -> Result<Json<Value>, ApiError> {
         "lockSeconds": dark_tee_core::timelock::LOCK_SECONDS,
         "finalizedTimestamp": st.finalized_timestamp,
         "launchpad": chain.launchpad.as_ref().map(|l| *l.address()),
+        "launchMinQuote": match &chain.launchpad {
+            Some(l) => l.minQuote().call().await.ok().map(|v| v.to_string()),
+            None => None,
+        },
         "gateway": gateway,
     })))
 }
@@ -445,6 +453,12 @@ async fn history(State(ctx): State<Arc<AppCtx>>, Path(id): Path<u32>) -> Result<
             }
             None => {} // bu havuz o batch'te henüz yoktu
         }
+    }
+    if let Some(demo) = ctx.demo_history.get(&id) {
+        let first_real = points.first().and_then(|p| p["time"].as_u64()).unwrap_or(u64::MAX);
+        let mut merged: Vec<Value> = demo.iter().filter(|p| p["time"].as_u64().is_some_and(|t| t < first_real)).cloned().collect();
+        merged.append(&mut points);
+        points = merged;
     }
     Ok(Json(json!({ "poolId": id, "windowSeconds": ctx.chain.window_seconds, "points": points, "locked": locked })))
 }

@@ -16,7 +16,8 @@ import {LaunchPad, IVaultLaunch} from "../src/launch/LaunchPad.sol";
 /// Ortam değişkenleri:
 ///   OWNER              vault + registry sahibi (önerilen: multisig)
 ///   ENCLAVE_ADDRESS    enclave'in /pubkey `address` alanı (boşsa sonra `register` edilir)
-///   USD_PER_MON        demo kuru: 1 MON karşılığı dUSD birimi (6 ondalık), varsayılan 10e6 = 10 $
+///   USD_PER_MON        kur: 1 MON karşılığı dUSD birimi (6 ondalık). Relayer MON_PRICE_SOURCE ile günceller.
+///   LAUNCH_MIN_QUOTE   proje açılışında en az likidite (dUSD birimi), varsayılan 250000 = 0,25 $
 ///   MIN_QUOTE_DEPOSIT  varsayılan 1e6 (1 birim, 6 ondalık)
 ///   WINDOW_SECONDS     varsayılan 30
 ///   FEE_BPS            varsayılan 30
@@ -27,8 +28,8 @@ contract Deploy is Script {
     function run() external returns (DarkVault vault, OwnerEnclaveRegistry registry) {
         address owner = vm.envAddress("OWNER");
         address enclave = vm.envOr("ENCLAVE_ADDRESS", address(0));
-        uint256 usdPerMon = vm.envOr("USD_PER_MON", uint256(10e6));
-        uint128 minQuote = uint128(vm.envOr("MIN_QUOTE_DEPOSIT", uint256(1e6)));
+        uint256 usdPerMon = vm.envOr("USD_PER_MON", uint256(26_000)); // ~0,026 $ (Eylül 2026 MON)
+        uint128 minQuote = uint128(vm.envOr("MIN_QUOTE_DEPOSIT", uint256(10_000))); // 0,01 $
         uint256 windowSeconds = vm.envOr("WINDOW_SECONDS", uint256(30));
         uint256 feeBps = vm.envOr("FEE_BPS", uint256(30));
 
@@ -51,7 +52,8 @@ contract Deploy is Script {
         vault =
             new DarkVault(owner, registry, verifier, p2, p3, quote, minQuote, block.timestamp, windowSeconds, feeBps);
         MonGateway gateway = new MonGateway(owner, dusd, IVaultDeposit(address(vault)), usdPerMon);
-        LaunchPad launchpad = new LaunchPad(IVaultLaunch(address(vault)), gateway);
+        LaunchPad launchpad =
+            new LaunchPad(IVaultLaunch(address(vault)), gateway, uint128(vm.envOr("LAUNCH_MIN_QUOTE", uint256(250_000))));
         dusd.setMinter(address(gateway), true);
         dusd.setMinter(msg.sender, true);
         if (owner == msg.sender) vault.setLaunchpad(address(launchpad));

@@ -35,7 +35,8 @@ contract LaunchPad is ReentrancyGuardTransient {
 
     /// @notice Küratörlü havuzlarla çakışmasın diye launchpad havuzları 1000'den başlar.
     uint32 public constant FIRST_POOL_ID = 1000;
-    uint128 public constant MIN_QUOTE = 10e6; // en az 10 $ başlangıç likiditesi
+    /// @notice En az başlangıç likiditesi (dUSD, 6 ondalık). Kurucu belirler: MON fiyatına göre makul tutulur.
+    uint128 public immutable minQuote;
 
     IVaultLaunch public immutable vault;
     MonGateway public immutable gateway;
@@ -54,9 +55,11 @@ contract LaunchPad is ReentrancyGuardTransient {
 
     error BadParams();
 
-    constructor(IVaultLaunch vault_, MonGateway gateway_) {
+    constructor(IVaultLaunch vault_, MonGateway gateway_, uint128 minQuote_) {
+        if (minQuote_ == 0) revert BadParams();
         vault = vault_;
         gateway = gateway_;
+        minQuote = minQuote_;
     }
 
     function launch(
@@ -72,7 +75,7 @@ contract LaunchPad is ReentrancyGuardTransient {
             revert BadParams();
         }
         uint256 quote = gateway.convert{value: msg.value}(address(this));
-        if (quote < MIN_QUOTE || quote > type(uint128).max) revert BadParams();
+        if (quote < minQuote || quote > type(uint128).max) revert BadParams();
 
         token = address(new LaunchToken(name, symbol, supply, address(this)));
         poolId = nextPoolId++;

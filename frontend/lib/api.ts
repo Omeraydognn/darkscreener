@@ -41,6 +41,8 @@ export type HistoryPoint = {
   sellCount: number;
   baseReserve: string;
   quoteReserve: string;
+  /** Yalnızca demo projeler: testnet öncesi örnek geçmiş (gerçek işlem değil) */
+  demo?: boolean;
 };
 
 export type History = {

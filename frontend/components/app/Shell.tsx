@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useMemo, useState } from "react";
 import { BookOpen, ChevronRight, Compass, EyeOff, LockKeyhole, Moon, Rocket, Search, ShieldCheck, Star, Sun, Wallet, WalletCards } from "lucide-react";
-import { config } from "@/lib/config";
+import { config, configError } from "@/lib/config";
 import { fmtUsd } from "@/lib/format";
 import { useStoredString } from "../usePoll";
 import { useApp } from "./AppProvider";
@@ -67,6 +67,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
             )}
           </div>
         </header>
+        {configError && (
+          <div className="connection-notice mx-7 mt-5" role="alert">
+            <div><strong>Site yapılandırması hatalı</strong><span>{configError}. Barındırma ortam değişkenlerini düzeltip yeniden yayınlayın.</span></div>
+          </div>
+        )}
         <div className="workspace-content">{children}</div>
         <footer className="terminal-footer">
           <span><span className={`status-dot ${infoError ? "offline" : ""}`} />{infoError ? "Bağlantı bekleniyor" : info ? "Veri bağlantısı aktif" : "Bağlanıyor"}</span>

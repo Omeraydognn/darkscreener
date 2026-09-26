@@ -108,6 +108,7 @@ sol! {
     #[sol(rpc)]
     interface ILaunchPad {
         function gateway() external view returns (address);
+        function minQuote() external view returns (uint128);
         function launches(uint32 poolId) external view returns (address creator, address token, bytes32 metadataHash, uint64 time);
     }
 
@@ -116,6 +117,7 @@ sol! {
         error ZeroAmount();
         error TransferFailed();
         function usdPerMon() external view returns (uint256);
+        function setRate(uint256 usdPerMon) external;
         function boxOf(address to) external view returns (address);
         function redeem(address to) external returns (uint256 value);
     }

@@ -32,7 +32,7 @@ contract GatewayTest is Test {
         dusd = new DarkUSD(owner);
         vault = new DarkVault(owner, registry, verifier, p2, p3, address(dusd), 1e6, block.timestamp, 60, 30);
         gw = new MonGateway(owner, dusd, IVaultDeposit(address(vault)), 10e6); // 1 MON = 10 $
-        pad = new LaunchPad(IVaultLaunch(address(vault)), gw);
+        pad = new LaunchPad(IVaultLaunch(address(vault)), gw, 10e6);
         vm.startPrank(owner);
         dusd.setMinter(address(gw), true);
         vault.setLaunchpad(address(pad));

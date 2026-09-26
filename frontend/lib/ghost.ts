@@ -14,6 +14,7 @@ export type Point = {
   buys: number;
   sells: number;
   tvl: number; // quote cinsinden (≈ 2 × quote rezervi)
+  demo?: boolean;
 };
 
 export type Candle = { time: number; open: number; high: number; low: number; close: number; volume: number; buyVol: number; sellVol: number };
@@ -32,6 +33,7 @@ export function toPoints(h: History, pool: Pool): Point[] {
       buys: p.buyCount,
       sells: p.sellCount,
       tvl: 2 * units(p.quoteReserve, qd),
+      demo: p.demo,
     };
   });
 }

@@ -141,7 +141,7 @@ function BatchTable({ pool, history }: { pool: Pool | undefined; history: Histor
         {pts.map((p) => (
           <tr key={p.batchId} className="border-b border-line/60 hover:bg-panel-2">
             <td className="px-4 py-1.5 text-muted">{dateFmt.format(p.time * 1000)}</td>
-            <td className="px-4 py-1.5 text-muted">#{p.batchId}</td>
+            <td className="px-4 py-1.5 text-muted">{p.demo ? "demo" : `#${p.batchId}`}</td>
             <td className="px-4 py-1.5 text-right">{fmtPrice(p.price)}</td>
             <td className="px-4 py-1.5 text-right">
               <span className="text-buy">{p.buys}</span> / <span className="text-sell">{p.sells}</span>

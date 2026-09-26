@@ -12,12 +12,15 @@
 //! - `RATE_PER_MIN`        IP başına dakikada yazma isteği (varsayılan 30)
 //! - `PROJECTS_FILE`       proje meta verisi + haber imzacıları (JSON)
 //! - `NEWS_FILE`           imzalı haberlerin kalıcı kaydı (JSON satırları)
+//! - `MON_PRICE_SOURCE`    `coingecko`: gateway kurunu MON piyasa fiyatına göre günceller (relayer = gateway sahibi)
+//! - `DEMO_HISTORY_FILE`   yalnızca demo projeler: işaretli örnek grafik geçmişi (isteğe bağlı)
 
 mod api;
 mod chain;
 mod claimer;
 mod index;
 mod news;
+mod price;
 mod reveal;
 mod settler;
 
@@ -66,6 +69,10 @@ async fn main() -> Result<()> {
         let (chain, index, enclave, revealer) = (chain.clone(), index.clone(), enclave.clone(), revealer.clone());
         tokio::spawn(async move {
             let mut claimer = claimer::Claimer::default();
+            let mut price = match std::env::var("MON_PRICE_SOURCE").as_deref() {
+                Ok("coingecko") => price::PriceUpdater::new().ok(),
+                _ => None,
+            };
             loop {
                 if let Err(e) = index.sync(&chain).await {
                     tracing::warn!(error = %e, "index sync");
@@ -84,6 +91,11 @@ async fn main() -> Result<()> {
                     Ok(n) => tracing::info!(revealed = n, "batches unlocked via drand"),
                     Err(e) => tracing::warn!(error = format!("{e:#}"), "reveal"),
                 }
+                if let Some(p) = price.as_mut() {
+                    if let Err(e) = p.tick(&chain).await {
+                        tracing::warn!(error = format!("{e:#}"), "MON price");
+                    }
+                }
                 tokio::time::sleep(poll).await;
             }
         });
@@ -97,6 +109,10 @@ async fn main() -> Result<()> {
         revealer,
         news,
         tokens: Default::default(),
+        demo_history: match std::env::var_os("DEMO_HISTORY_FILE") {
+            Some(p) => serde_json::from_str(&std::fs::read_to_string(&p).context("DEMO_HISTORY_FILE")?).context("DEMO_HISTORY_FILE json")?,
+            None => Default::default(),
+        },
     });
     let addr = env_or("LISTEN_ADDR", "0.0.0.0:8090".to_string())?;
     let listener = tokio::net::TcpListener::bind(&addr).await?;

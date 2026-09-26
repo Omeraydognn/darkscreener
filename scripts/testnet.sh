@@ -105,6 +105,10 @@ up)
       scripts/projects.template.json > "$T/projects.json"
   fi
   touch "$T/news.jsonl"
+  # Demo projelerin testnet öncesi örnek grafiği (işaretli; gerçek veri 7 gün sonra devam eder)
+  if [ ! -f "$T/demo-history.json" ]; then
+    RPC_URL=$RPC DEPLOYMENT=$D OUT="$T/demo-history.json" node sdk/e2e/gen-demo-history.mjs
+  fi
   cat > "$T/relayer.env" <<EOF
 RPC_URL=$RPC
 VAULT_ADDRESS=$VAULT
@@ -116,6 +120,8 @@ POLL_MS=1000
 LISTEN_ADDR=127.0.0.1:$PORT_RELAYER
 PROJECTS_FILE=$T/projects.json
 NEWS_FILE=$T/news.jsonl
+DEMO_HISTORY_FILE=$T/demo-history.json
+MON_PRICE_SOURCE=coingecko
 RATE_PER_MIN=60
 RUST_LOG=warn,darkpool_relayer=info
 EOF
