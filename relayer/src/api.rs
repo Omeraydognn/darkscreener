@@ -10,7 +10,7 @@
 //! | GET  /v1/info           | zincir, vault, enclave anahtarı + registry kaydı, settle durumu |
 //! | GET  /v1/notes?from=&limit= | not ağacı yaprakları (istemci ağacı buradan kurar) |
 //! | GET  /v1/batches/{id}   | kapsül, özet, sonuçlar (7 gün sonra açmak için) |
-//! | POST /v1/orders         | { ciphertext, proof } → submitShieldedOrder |
+//! | POST /v1/orders         | { ciphertext, proof, lotKeyHash? } → submitShieldedOrder(WithLotKey) |
 //! | POST /v1/lot-sells      | { ciphertext, lot } → submitLotSell (kilitli lotu yüzdeyle sat) |
 //! | GET  /v1/orders/{id}    | emrin durumu; lot satışıysa kalan lot, lotsa satışları |
 //! | POST /v1/withdrawals    | { proof, token, amount, spendBlinding, recipient } → withdraw |
@@ -333,9 +333,13 @@ async fn order_status(State(ctx): State<Arc<AppCtx>>, Path(id): Path<B256>) -> R
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct OrderReq {
     ciphertext: Bytes,
     proof: ProofDto,
+    /// Alımın sonucu kilitliyken yüzdeyle satılabilsin diye lot anahtar zincirinin başı (kanıt buna bağlı)
+    #[serde(default)]
+    lot_key_hash: Option<B256>,
 }
 
 async fn submit_order(
@@ -350,9 +354,21 @@ async fn submit_order(
     let proof = req.proof.to_call()?;
     let order_id = B256::from(keccak(&req.ciphertext));
     let chain = &ctx.chain;
-    let tx = chain
-        .send(&format!("submitShieldedOrder {order_id}"), chain.vault.submitShieldedOrder(req.ciphertext, proof))
-        .await?;
+    let tx = match req.lot_key_hash {
+        Some(h) => {
+            chain
+                .send(
+                    &format!("submitShieldedOrderWithLotKey {order_id}"),
+                    chain.vault.submitShieldedOrderWithLotKey(req.ciphertext, proof, h),
+                )
+                .await?
+        }
+        None => {
+            chain
+                .send(&format!("submitShieldedOrder {order_id}"), chain.vault.submitShieldedOrder(req.ciphertext, proof))
+                .await?
+        }
+    };
     Ok(Json(json!({ "orderId": order_id, "txHash": tx })))
 }
 
@@ -361,10 +377,13 @@ struct LotSellReq {
     ciphertext: Bytes,
     /// Satılan lot: settle edilmiş, kilidi açılmamış bir alımın (ya da önceki lot satışının) emir kimliği
     lot: B256,
+    /// Lotun anahtar zincirindeki bir sonraki halka (yalnızca sahibi bilir; başkası lotu kilitleyemez)
+    #[serde(rename = "lotKey")]
+    lot_key: B256,
 }
 
-/// Kilitli lot satışı. Kanıt yoktur: sahipliği enclave, şifreli gövdedeki açılışla doğrular
-/// (yanlışsa lot serbest kalır). Kontrat lotu satış settle edilene kadar kilitler.
+/// Kilitli lot satışı. Kanıt yoktur: kontrat lot anahtarını (hash zinciri), enclave şifreli gövdedeki
+/// açılışı doğrular (yanlışsa lot serbest kalır). Kontrat lotu satış settle edilene kadar kilitler.
 async fn submit_lot_sell(
     State(ctx): State<Arc<AppCtx>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -377,7 +396,7 @@ async fn submit_lot_sell(
     let order_id = B256::from(keccak(&req.ciphertext));
     let chain = &ctx.chain;
     let tx = chain
-        .send(&format!("submitLotSell {order_id} (lot {})", req.lot), chain.vault.submitLotSell(req.ciphertext, req.lot))
+        .send(&format!("submitLotSell {order_id} (lot {})", req.lot), chain.vault.submitLotSell(req.ciphertext, req.lot, req.lot_key))
         .await?;
     Ok(Json(json!({ "orderId": order_id, "txHash": tx })))
 }

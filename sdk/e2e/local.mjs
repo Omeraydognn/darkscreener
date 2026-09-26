@@ -27,7 +27,7 @@ import {
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import { noteHelpers, Tree, proveSpend, randomField, shutdown } from "../../circuits/lib/note.mjs";
 import { secp256k1 } from "../src/ecies.mjs";
-import { encryptOrder, encryptLotSell, orderContext, Side, CIPHERTEXT_LEN, LOT_MEMO_LEN, SEALED_RESULT_LEN } from "../src/order.mjs";
+import { encryptOrder, encryptLotSell, lotKeyAt, nextLotKey, orderContext, Side, CIPHERTEXT_LEN, LOT_MEMO_LEN, SEALED_RESULT_LEN } from "../src/order.mjs";
 import { RelayerClient, proofForRelayer } from "../src/relayer.mjs";
 
 const RPC = process.env.RPC_URL;
@@ -48,7 +48,7 @@ const wallet = createWalletClient({ chain, transport: http(RPC), account: user }
 const vaultAbi = parseAbi([
   "function deposit(address token, uint128 amount, uint256 secretHash)",
   "function noteRoot() view returns (uint256)",
-  "function orders(bytes32) view returns (uint64 window, bool done, uint256 spendCommitment)",
+  "function orders(bytes32) view returns (uint64 window, bool done, uint256 spendCommitment, bytes32 lotKey)",
   "function withdrawContext(address) view returns (uint256)",
   "function lotState(bytes32) view returns (uint8)",
 ]);
@@ -136,8 +136,11 @@ async function main() {
     spendBlinding: buy.spendBlinding,
     owner,
   });
-  const buyProof = await proveSpend(h, t.tree, notes[0], { amount: buy.amount, blinding: buy.spendBlinding }, buy.changeBlinding, orderContext(ct));
-  const sentBuy = await relayer.submitOrder(bytesToHex(ct), proofForRelayer(buyProof));
+  // Lot anahtar zinciri: kilitliyken yalnızca bu zinciri bilen (kullanıcı) satabilir; kanıt zincir başına bağlı.
+  buy.lotSeed = bytesToHex(randomBytes(32));
+  const lotKeyHash = lotKeyAt(buy.lotSeed, 0);
+  const buyProof = await proveSpend(h, t.tree, notes[0], { amount: buy.amount, blinding: buy.spendBlinding }, buy.changeBlinding, orderContext(ct, lotKeyHash));
+  const sentBuy = await relayer.submitOrder(bytesToHex(ct), proofForRelayer(buyProof), lotKeyHash);
   const tx = await pub.getTransaction({ hash: sentBuy.txHash });
   assert(getAddress(tx.from) === getAddress(info.relayer), "order must be sent by relayer");
   assert(getAddress(tx.from) !== getAddress(user.address), "user address must not appear");
@@ -174,18 +177,26 @@ async function main() {
 
   // ---------------------------------------------------------------- kilitli lot satışı
   const lotState = (id) => pub.readContract({ address: VAULT, abi: vaultAbi, functionName: "lotState", args: [id] });
-  const lotSell = async (lot, pctBps, auth) => {
+  const lotHead = async (id) => (await pub.readContract({ address: VAULT, abi: vaultAbi, functionName: "orders", args: [id] }))[3];
+  const lotSell = async (lot, pctBps, auth, key) => {
     const ct = await encryptLotSell(info.enclavePub, deploy.chainId, VAULT, { poolId: 1, pctBps, lotOrderId: lot, auth });
-    const res = await relayer.submitLotSell(bytesToHex(ct), lot);
+    const res = await relayer.submitLotSell(bytesToHex(ct), lot, key ?? nextLotKey(buy.lotSeed, await lotHead(lot)));
     const tx = await pub.getTransaction({ hash: res.txHash });
     assert(getAddress(tx.from) === getAddress(info.relayer), "lot sell must be sent by relayer");
     return res.orderId;
   };
 
-  step("kilitli lot satışı: yanlış yetki (başkası lotu satmaya çalışır) -> reddedilir, lot serbest kalır");
-  const forged = await lotSell(sentBuy.orderId, 10_000, randomField());
+  step("kilitli lot satışı: lot anahtarını bilmeyen biri lotu kilitleyemez");
+  const stranger = await lotSell(sentBuy.orderId, 10_000, randomField(), bytesToHex(randomBytes(32))).then(() => null, (e) => e);
+  assert(stranger && /LotKeyInvalid/.test(stranger.message), `stranger must not lock the lot (${stranger?.message})`);
+  assert((await lotState(sentBuy.orderId)) === 0, "lot stays free");
+  ok("anahtarsız satış zincirde reddedildi (LotKeyInvalid); lot serbest");
+
+  step("kilitli lot satışı: yanlış yetki (doğru anahtar, yanlış açılış) -> enclave reddeder, lot serbest kalır");
+  const usedKey = nextLotKey(buy.lotSeed, await lotHead(sentBuy.orderId));
+  const forged = await lotSell(sentBuy.orderId, 10_000, randomField(), usedKey);
   assert((await lotState(sentBuy.orderId)) === 1, "lot must be pending while the sale waits");
-  const malformed = await relayer.submitLotSell("0x01", sentBuy.orderId).then(() => null, (e) => e);
+  const malformed = await relayer.submitLotSell("0x01", sentBuy.orderId, usedKey).then(() => null, (e) => e);
   assert(malformed && /400/.test(malformed.message), "relayer rejects malformed lot sell");
   let dup = null;
   try {
@@ -198,6 +209,8 @@ async function main() {
   assert(forgedRes.status === 2 && forgedRes.lot?.toLowerCase() === sentBuy.orderId.toLowerCase(), "forged sale refunded");
   assert(forgedRes.lotUpdate && forgedRes.lotUpdate.filled === false, "forged sale not filled");
   assert((await lotState(sentBuy.orderId)) === 0, "lot freed after rejected sale");
+  const replay = await lotSell(sentBuy.orderId, 10_000, randomField(), usedKey).then(() => null, (e) => e);
+  assert(replay && /LotKeyInvalid/.test(replay.message), "a revealed lot key cannot be reused");
   ok(`sahte satış ${forged.slice(0, 10)}… reddedildi; lot yeniden serbest (not harcanmadı, iade yok)`);
 
   step("kilitli lot satışı: alımın %50'si (kullanıcı miktarı bilmiyor, enclave lot notundan okur)");

@@ -67,6 +67,7 @@ The same data formats are implemented in **Rust, Solidity, Circom and JS**. Chan
 | Poseidon notes, commitments, nullifiers | `tee-core/src/note.rs` | `lib/NoteLib.sol`, `lib/PoseidonTree.sol` | `sdk/src/note.mjs`, `circuits/src/spend.circom` |
 | Settlement digest | `tee-core/src/digest.rs` | `DarkPoolLib.settlementDigest` | — |
 | drand quicknet round ↔ time (genesis, period) | `tee-core/src/timelock.rs` | `lib/DrandQuicknet.sol` | — |
+| Lot sale key chain (`lotKeyAt`, ctx = `keccak(ciphertext \|\| lotKeyHash)` for buys) | — | `submitShieldedOrderWithLotKey`, `submitLotSell` in `DarkVault.sol` | `sdk/src/order.mjs`, `frontend/lib/wallet.ts` (`lotSeed`) |
 | Signed news message | `relayer/src/news.rs` | — | `sdk/src/news.mjs` |
 | Relayer HTTP API | `relayer/src/api.rs` | — | `sdk/src/relayer.mjs`, `frontend/lib/api.ts` |
 | Settlement checks | `relayer/src/settler.rs` (must replay contract checks exactly) | `DarkVault.settleBatch` | — |

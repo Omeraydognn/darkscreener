@@ -11,6 +11,9 @@ import {
   openResult,
   orderContext,
   remainderId,
+  lotKeyAt,
+  nextLotKey,
+  LOT_KEY_CHAIN,
   splitSealedResult,
   CIPHERTEXT_LEN,
   LOT_MEMO_LEN,
@@ -84,4 +87,26 @@ test("dolu sonuçlar enclave lot notu taşır; açarken ayıklanır", () => {
     assert.equal(result.length, SEALED_RESULT_LEN);
     assert.equal(lotMemo.length, LOT_MEMO_LEN);
   }
+});
+
+test("lot anahtar zinciri: her halka öncekinin keccak ön görüntüsü; sıradaki anahtar zincir başından bulunur", () => {
+  const seed = keccak256(new TextEncoder().encode("seed"));
+  const head = lotKeyAt(seed, 0);
+  for (let i = 0; i < LOT_KEY_CHAIN; i++) assert.equal(keccak256(lotKeyAt(seed, i + 1)), lotKeyAt(seed, i));
+  assert.equal(lotKeyAt(seed, LOT_KEY_CHAIN), seed);
+  assert.equal(nextLotKey(seed, head), lotKeyAt(seed, 1));
+  assert.equal(nextLotKey(seed, lotKeyAt(seed, 5)), lotKeyAt(seed, 6));
+  assert.equal(nextLotKey(seed, seed), null, "zincir bitti");
+  assert.equal(nextLotKey(seed, keccak256("0x01")), null);
+});
+
+test("lot anahtarlı emrin bağlamı keccak(ciphertext || lotKeyHash) (DarkVault ile aynı)", () => {
+  const ct = new Uint8Array(190).fill(7);
+  const h = "0x" + "ab".repeat(32);
+  const packed = new Uint8Array(222);
+  packed.set(ct, 0);
+  packed.set(hexToBytes(h), 190);
+  assert.equal(orderContext(ct, h), BigInt(keccak256(packed)) % 21888242871839275222246405745257275088548364400416034343698204186575808495617n);
+  assert.equal(orderContext(ct), BigInt(keccak256(ct)) % 21888242871839275222246405745257275088548364400416034343698204186575808495617n);
+  assert.notEqual(orderContext(ct, h), orderContext(ct));
 });

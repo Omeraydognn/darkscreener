@@ -92,6 +92,7 @@ sol! {
         error NotRevealed();
         error LotUnavailable();
         error LotMismatch();
+        error LotKeyInvalid();
 
         function quoteToken() external view returns (address);
         function genesisTime() external view returns (uint256);
@@ -104,15 +105,16 @@ sol! {
         function windowEnd(uint64 window) external view returns (uint256);
         function ordersHash(uint64 window) external view returns (bytes32);
         function windowPools(uint64 window) external view returns (uint32[] memory ids, bytes32 poolsChain);
-        function orders(bytes32 orderId) external view returns (uint64 window, bool done, uint256 spendCommitment);
+        function orders(bytes32 orderId) external view returns (uint64 window, bool done, uint256 spendCommitment, bytes32 lotKey);
         function batches(uint64 batchId) external view returns (bytes32 resultsRoot, uint64 window, uint64 unlockTime, bytes32 reservesCommitment);
 
         function lotState(bytes32 lot) external view returns (uint8);
         function lotSells(bytes32 orderId) external view returns (bytes32 lot, uint64 window, bool settled);
 
         function settleBatch(SettleParams calldata p, Result[] calldata results, LotUpdate[] calldata lots) external;
-        function submitLotSell(bytes calldata ciphertext, bytes32 lot) external returns (bytes32 orderId);
+        function submitLotSell(bytes calldata ciphertext, bytes32 lot, bytes32 lotKey) external returns (bytes32 orderId);
         function submitShieldedOrder(bytes calldata ciphertext, SpendProof calldata p) external returns (bytes32 orderId);
+        function submitShieldedOrderWithLotKey(bytes calldata ciphertext, SpendProof calldata p, bytes32 lotKeyHash) external returns (bytes32 orderId);
         function withdraw(SpendProof calldata p, address token, uint128 amount, uint256 spendBlinding, address recipient) external;
         function claimNote(uint64 batchId, bytes32 orderId, uint256 commitment, bytes32 sealedResultHash, bytes32[] calldata proof) external;
         function returnRefunded(uint64 batchId, bytes32 orderId, bytes32[] calldata proof) external;

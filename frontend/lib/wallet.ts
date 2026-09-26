@@ -31,7 +31,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { buildSpendInput, noteHelpers, randomField, SNARK_FIELD, Tree } from "darkpool-sdk/note.mjs";
-import { encryptLotSell, encryptOrder, openRemainder, openResult, orderContext, Side } from "darkpool-sdk/order.mjs";
+import { encryptLotSell, encryptOrder, lotKeyAt, nextLotKey, openRemainder, openResult, orderContext, Side } from "darkpool-sdk/order.mjs";
 import { proofForRelayer } from "darkpool-sdk/relayer.mjs";
 import { message as newsMessage } from "darkpool-sdk/news.mjs";
 import { api, type Info, type Pool } from "./api";
@@ -54,6 +54,7 @@ const vaultAbi = parseAbi([
   "function noteRoot() view returns (uint256)",
   "function withdrawContext(address recipient) view returns (uint256)",
   "function minDeposit(address token) view returns (uint128)",
+  "function orders(bytes32 orderId) view returns (uint64 window, bool done, uint256 spendCommitment, bytes32 lotKey)",
 ]);
 const gatewayAbi = parseAbi([
   "function depositNative(uint256 secretHash, uint128 expected) payable",
@@ -427,12 +428,14 @@ export class ShieldedWallet {
       });
       onStep?.(`Sıfır bilgi kanıtı üretiliyor${tag}`);
       const changeBlinding = randomField();
-      const proof = await this.prove(tree, part.note, part.amount, spendBlinding, changeBlinding, orderContext(ct));
+      // Alımın sonucu kilitliyken yalnızca bu hesap satabilsin: lot anahtar zincirinin başı kanıta bağlanır.
+      const lotKeyHash = p.side === "buy" ? lotKeyAt(lotSeed(spendR), 0) : undefined;
+      const proof = await this.prove(tree, part.note, part.amount, spendBlinding, changeBlinding, orderContext(ct, lotKeyHash));
       onStep?.(`Relayer üzerinden gönderiliyor${tag}`);
       const res = await fetch(`${config.relayerUrl}/v1/orders`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ciphertext: bytesToHex(ct), proof }),
+        body: JSON.stringify({ ciphertext: bytesToHex(ct), proof, ...(lotKeyHash ? { lotKeyHash } : {}) }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Relayer emri reddetti");
@@ -504,11 +507,15 @@ export class ShieldedWallet {
       lotOrderId: lot.orderId,
       auth: this.h.secretHash(this.owner, BigInt(lot.spendR)),
     });
+    // Lotun anahtar zincirinde sıradaki halka: zincir başı kontrattan okunur (yedekten dönen cihazda da çalışır).
+    const [, , , head] = await publicClient.readContract({ address: config.vault, abi: vaultAbi, functionName: "orders", args: [lot.orderId] });
+    const lotKey = nextLotKey(lotSeed(BigInt(lot.spendR)), head);
+    if (!lotKey) throw new Error("Bu alım kilitliyken satılamıyor (lot anahtarı yok ya da tükendi); kilidi açılınca satabilirsin");
     onStep?.(`Relayer üzerinden gönderiliyor${tag}`);
     const res = await fetch(`${config.relayerUrl}/v1/lot-sells`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ciphertext: bytesToHex(ct), lot: lot.orderId }),
+      body: JSON.stringify({ ciphertext: bytesToHex(ct), lot: lot.orderId, lotKey }),
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error ?? "Relayer lot satışını reddetti");
@@ -648,6 +655,10 @@ export class ShieldedWallet {
     return poolId;
   }
 }
+
+/** Alımın lot anahtar zinciri tohumu: emrin gizli `spendR`'sinden türer (yalnızca hesap sahibi bilir, yedekten geri gelir). */
+const lotSeed = (spendR: bigint): Hex =>
+  keccak256(concat([toBytes("darkscreener/lot-key/v1"), `0x${spendR.toString(16).padStart(64, "0")}` as Hex]));
 
 // ---------------------------------------------------------------- portföy
 
