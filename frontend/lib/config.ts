@@ -28,7 +28,10 @@ export const configError: string | null =
       : null;
 
 export const config = {
-  rpcUrl: RPC ?? "http://127.0.0.1:28545",
+  /** İlk RPC; cüzdana (MetaMask) eklenen adres budur. */
+  rpcUrl: (RPC ?? "http://127.0.0.1:28545").split(",")[0].trim(),
+  /** Virgülle ayrılmış RPC listesi: ilki düşerse sıradakine geçilir (viem `fallback`). */
+  rpcUrls: (RPC ?? "http://127.0.0.1:28545").split(",").map((u) => u.trim()).filter(Boolean),
   relayerUrl: (RELAYER ?? "http://127.0.0.1:28090").replace(/\/+$/, ""),
   chainId: Number(CHAIN_ID ?? 31337),
   vault: (VAULT ?? "0x0000000000000000000000000000000000000000") as `0x${string}`,

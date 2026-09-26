@@ -18,6 +18,7 @@ import {
   defineChain,
   getAddress,
   hexToBytes,
+  fallback,
   http,
   isAddress,
   keccak256,
@@ -43,7 +44,11 @@ export const chain = defineChain({
   rpcUrls: { default: { http: [config.rpcUrl] } },
   ...(config.explorerUrl ? { blockExplorers: { default: { name: "Explorer", url: config.explorerUrl } } } : {}),
 });
-export const publicClient = createPublicClient({ chain, transport: http(config.rpcUrl) });
+// Herkese açık RPC'ler hız sınırına takılınca (429, CORS başlığı olmadan) tarayıcı "Failed to fetch" verir:
+// her adres birkaç kez yeniden denenir, liste verilmişse sıradaki RPC'ye geçilir.
+const rpcTransport = () =>
+  fallback(config.rpcUrls.map((u) => http(u, { retryCount: 4, retryDelay: 400, timeout: 15_000 })), { rank: false });
+export const publicClient = createPublicClient({ chain, transport: rpcTransport() });
 
 const vaultAbi = parseAbi([
   "function noteRoot() view returns (uint256)",
@@ -177,7 +182,7 @@ export class ShieldedWallet {
     const hex32 = (v: bigint) => `0x${v.toString(16).padStart(64, "0")}` as Hex;
     const viewSk = hexToBytes(hex32((derive(seed, 2) % (N - 1n)) + 1n));
     const account = privateKeyToAccount(hex32((derive(seed, 3) % (N - 1n)) + 1n));
-    const client = createWalletClient({ chain, transport: http(config.rpcUrl), account });
+    const client = createWalletClient({ chain, transport: rpcTransport(), account });
     const h = await noteHelpers();
     return new ShieldedWallet({ address: account.address, account, client }, spendKey, h.owner(spendKey), viewSk, secret, h);
   }

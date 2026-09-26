@@ -83,18 +83,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!wallet || !infoData?.gateway) return;
     let busy = false;
+    let failures = 0;
     const tick = async () => {
       if (busy || paused.current) return;
       busy = true;
       try {
         const bal = await wallet.monBalance();
+        failures = 0;
+        setSweep((s) => (s.state === "error" ? { ...s, state: "idle", error: undefined } : s));
         if (bal > 0n) {
           setSweep((s) => ({ ...s, state: "sweeping", mon: bal, error: undefined }));
           const r = await wallet.sweepDeposit(infoData);
           setSweep((s) => ({ state: "idle", last: r ? { usd: r.usd, at: Date.now() } : s.last, mon: r ? undefined : bal }));
         }
       } catch (e) {
-        setSweep((s) => ({ ...s, state: "error", error: (e as Error).message }));
+        // Tek seferlik RPC/ağ hatası bir sonraki denemede düzelir; yalnızca üst üste hatada göster.
+        failures += 1;
+        if (failures >= 3 || !isNetworkError(e)) setSweep((s) => ({ ...s, state: "error", error: shortError(e) }));
       } finally {
         busy = false;
       }
@@ -136,4 +141,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     },
   };
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;
+}
+
+const isNetworkError = (e: unknown) => /HTTP request failed|Failed to fetch|NetworkError|timed out|429/i.test((e as Error)?.message ?? "");
+
+/** viem hata metninin ilk satırı (istek gövdesi ve sürüm ayrıntısı olmadan). */
+function shortError(e: unknown): string {
+  const err = e as { shortMessage?: string; message?: string };
+  if (isNetworkError(e)) return "RPC'ye ulaşılamıyor, tekrar deneniyor";
+  return (err.shortMessage ?? err.message ?? String(e)).split("\n")[0];
 }
