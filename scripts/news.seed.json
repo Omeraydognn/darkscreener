@@ -1,0 +1,44 @@
+[
+  {
+    "poolId": 1,
+    "daysAgo": 6.3,
+    "title": "Nebula Compute: testnet sağlayıcı kayıtları açıldı",
+    "body": "Yol haritasının ilk adımı olarak GPU sağlayıcıları testnette kayıt olmaya başladı. Kayıtlı sağlayıcılar örnek eğitim işleriyle kapasite testinden geçiyor; ölçülen performans ve erişilebilirlik puanları iş eşleştirmesinde kullanılacak. İlk dalgada gelen başvurular ekip tarafından elle doğrulanıyor.",
+    "url": ""
+  },
+  {
+    "poolId": 2,
+    "daysAgo": 5.1,
+    "title": "Orbit Relay: ilk L2 entegrasyonu testnette",
+    "body": "Zincirler arası mesaj taşıma ağı ilk L2 entegrasyonunu testnette devreye aldı. Mesajlar şimdilik ekip tarafından işletilen röleler üzerinden taşınıyor; izinsiz röle operatörleri yol haritasının ikinci çeyreğinde açılacak. Entegrasyon süresince gecikme ve başarısız mesaj oranları herkese açık olarak raporlanacak.",
+    "url": ""
+  },
+  {
+    "poolId": 4,
+    "daysAgo": 4.4,
+    "title": "ArfDAO, TOKEN2049 Singapur'a katılıyor",
+    "body": "ArfDAO ekibi, Singapur'da düzenlenecek TOKEN2049'da yer alacak. Etkinlik boyunca topluluğun ilk ürünü ArfHE Wallet'ın canlı demolarını yapacağız, geliştiricilerle ve ekosistem ekipleriyle birebir görüşmeler gerçekleştireceğiz.\n\nProgramda:\n• ArfHE Wallet canlı demo ve soru-cevap\n• Farklı disiplinlerden geliştiricilerin katılacağı ArfDAO topluluk buluşması\n• Yeni topluluk projeleri için iş birliği görüşmeleri\n\nEtkinlikte ekiple görüşmek, buluşmaya katılmak ya da iş birliği talebinde bulunmak için arfdao.dev üzerinden bize ulaşabilirsiniz. Katılım takvimi ve buluşma detayları sitede paylaşılacak.",
+    "url": "https://arfdao.dev"
+  },
+  {
+    "poolId": 3,
+    "daysAgo": 3.2,
+    "title": "Vela Storage: sağlayıcı ödül modeli taslağı yayınlandı",
+    "body": "Şifreli dağıtık depolama ağı için sağlayıcı ödül modelinin ilk taslağı topluluk görüşüne açıldı. Taslakta ödüller; depolanan veri miktarı, erişilebilirlik süresi ve rastgele saklama kanıtlarının başarı oranına göre hesaplanıyor. Geri bildirim süreci iki hafta sürecek, ardından model testnette denenecek.",
+    "url": ""
+  },
+  {
+    "poolId": 4,
+    "daysAgo": 1.9,
+    "title": "ArfHE Wallet canlıya alındı",
+    "body": "ArfDAO topluluğunun geliştirdiği ilk ürün ArfHE Wallet yayında. Farklı disiplinlerden geliştiricilerin katkılarıyla hazırlanan ilk sürüm artık herkesin kullanımına açık.\n\nBu sürümde:\n• Cüzdan oluşturma ve mevcut cüzdanı içe aktarma\n• Varlık gönderme ve alma\n• İşlem geçmişi ve adres defteri\n\nKurulum adımları, kullanım rehberi ve sık sorulan sorular arfdao.dev'de. Hata bildirimleri ve özellik önerileri için topluluk kanallarımız açık; gelen geri bildirimler bir sonraki sürümün önceliklerini belirleyecek.",
+    "url": "https://arfdao.dev"
+  },
+  {
+    "poolId": 1,
+    "daysAgo": 0.8,
+    "title": "Nebula Compute: bağımsız güvenlik denetimi başladı",
+    "body": "Mainnet beta öncesinde akıllı kontratların ve iş eşleştirme servisinin bağımsız güvenlik denetimi başladı. Denetim raporu tamamlandığında bulgular ve yapılan düzeltmelerle birlikte yayınlanacak.",
+    "url": ""
+  }
+]
