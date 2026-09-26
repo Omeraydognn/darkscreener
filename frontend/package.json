@@ -9,7 +9,8 @@
     "lint": "eslint",
     "zk": "mkdir -p public/zk && cp ../circuits/keys/spend.wasm ../circuits/keys/spend_final.zkey public/zk/",
     "predev": "npm run zk",
-    "prebuild": "npm run zk"
+    "prebuild": "npm run sdk && npm run zk",
+    "sdk": "npm install --prefix ../sdk --no-audit --no-fund"
   },
   "dependencies": {
     "@noble/curves": "^2.4.0",

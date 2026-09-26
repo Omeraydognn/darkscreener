@@ -161,10 +161,18 @@ pub struct Chain {
 impl Chain {
     pub async fn connect(rpc_url: &str, vault: Address, signer: PrivateKeySigner) -> Result<Self> {
         let sender = signer.address();
-        let provider = ProviderBuilder::new()
-            .wallet(EthereumWallet::from(signer))
-            .connect_http(rpc_url.parse().context("RPC_URL")?)
-            .erased();
+        // Herkese açık Monad RPC'si istek/sn sınırlıdır (-32011 / 429): sınırda üstel bekleyip yeniden dene.
+        let client = alloy::rpc::client::ClientBuilder::default()
+            .layer(alloy::transports::layers::RetryBackoffLayer::new_with_policy(
+                12,
+                400,
+                300,
+                // Monad: "-32011 requests limited to N/sec" standart 429 değil
+                alloy::transports::layers::RateLimitRetryPolicy::default()
+                    .or(|e| e.as_error_resp().is_some_and(|r| r.code == -32011)),
+            ))
+            .http(rpc_url.parse().context("RPC_URL")?);
+        let provider = ProviderBuilder::new().wallet(EthereumWallet::from(signer)).connect_client(client).erased();
         let chain_id = provider.get_chain_id().await.context("chain id")?;
         let v = IDarkVault::new(vault, provider.clone());
         let quote_token = v.quoteToken().call().await.context("vault.quoteToken (VAULT_ADDRESS doğru mu?)")?;

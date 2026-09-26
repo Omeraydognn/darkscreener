@@ -1,0 +1,12 @@
+{
+  "chainId": 10143,
+  "deployBlock": 65867875,
+  "gateway": "0x0c916F20f7d8FfbaaF06F570eE0EDd7fA20b8dd8",
+  "launchpad": "0x32DAa01eF3035d62027efc780529F1CBa8B9f45b",
+  "quoteToken": "0x0ED01119b38953FE6Ea6086e88ec2124e26c0861",
+  "registry": "0xed983Ba8B5167a81251dc86A6b921Cc34B5b0301",
+  "usdPerMon": 10000000,
+  "vault": "0xD5862610405B8023194363243E2Db1CeAac09B27",
+  "verifier": "0xD0F16409DA940D491E8712E3CCcC97127Ca9212E",
+  "windowSeconds": 60
+}

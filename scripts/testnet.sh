@@ -4,6 +4,7 @@
 #   ./scripts/testnet.sh status   # adresler + MON bakiyeleri
 #   ./scripts/testnet.sh deploy   # kontratlar + 3 demo proje + relayer'a gaz (bir kez)
 #   ./scripts/testnet.sh up       # enclave + relayer'ı çalıştır (açık kaldığı sürece)
+#   ./scripts/testnet.sh down     # çalışan enclave + relayer'ı durdur
 #   ./scripts/testnet.sh news <poolId> "<başlık>" "<metin>"   # demo projesi adına imzalı haber
 #
 # Anahtarlar .testnet/ altındadır (git dışı, 600) ve hiçbir çıktıya yazdırılmaz.
@@ -14,7 +15,7 @@ ROOT=$(pwd)
 T=${TESTNET_DIR:-$ROOT/.testnet}
 RPC=${RPC_URL:-https://testnet-rpc.monad.xyz}
 EXPLORER=${EXPLORER_URL:-https://testnet.monadexplorer.com}
-PORT_ENCLAVE=${PORT_ENCLAVE:-8080}
+PORT_ENCLAVE=${PORT_ENCLAVE:-8180} # 8080 docker-compose enclave'ıyla çakışmasın
 PORT_RELAYER=${PORT_RELAYER:-8090}
 WINDOW_SECONDS=${WINDOW_SECONDS:-60}
 OWNER_RESERVE=${OWNER_RESERVE:-300000000000000000} # 0.3 MON: yönetim işlemleri için deployer'da kalır
@@ -90,6 +91,9 @@ deploy)
 
 up)
   [ -f "$T/deployed" ] || { echo "önce: ./scripts/testnet.sh deploy"; exit 1; }
+  if curl -sf "http://127.0.0.1:$PORT_RELAYER/v1/info" >/dev/null 2>&1; then
+    echo "relayer zaten çalışıyor: http://127.0.0.1:$PORT_RELAYER (durdurmak için: ./scripts/testnet.sh down)"; exit 0
+  fi
   D=contracts/deployments/10143.json
   VAULT=$(jq -r .vault $D)
   NK=$T/news-keys.json
@@ -125,13 +129,32 @@ NEXT_PUBLIC_EXPLORER_URL=$EXPLORER
 EOF
   start_enclave
   trap 'kill ${ENCLAVE_PID:-} ${RELAYER_PID:-} 2>/dev/null || true' EXIT INT TERM
+  # Enclave anahtarı zincirdeki registry'de kayıtlı olmalı; değiştiyse (ör. yeni makine) yenisini
+  # kaydet, eskisini kaldır. Registry sahibi deployer'dır.
+  REGISTRY=$(jq -r .registry $D)
+  if [ "$(cast call "$REGISTRY" 'isEnclave(address)(bool)' "$ENCLAVE_ADDRESS" --rpc-url "$RPC")" != true ]; then
+    echo "==> registry: enclave $ENCLAVE_ADDRESS kaydediliyor"
+    cast send "$REGISTRY" 'register(address,bytes32)' "$ENCLAVE_ADDRESS" 0x0000000000000000000000000000000000000000000000000000000000000000 --rpc-url "$RPC" --private-key "$DEPLOYER_KEY" >/dev/null
+    OLD=$(cat "$T/enclave-address" 2>/dev/null || true)
+    if [ -n "$OLD" ] && [ "$OLD" != "$ENCLAVE_ADDRESS" ] && [ "$(cast call "$REGISTRY" 'isEnclave(address)(bool)' "$OLD" --rpc-url "$RPC")" = true ]; then
+      echo "==> registry: eski enclave $OLD kaldırılıyor"
+      cast send "$REGISTRY" 'revoke(address)' "$OLD" --rpc-url "$RPC" --private-key "$DEPLOYER_KEY" >/dev/null
+    fi
+  fi
+  echo "$ENCLAVE_ADDRESS" > "$T/enclave-address"
   echo "==> enclave $ENCLAVE_ADDRESS  (log: .testnet/enclave.log)"
   (set -a; . "$T/relayer.env"; set +a; exec target/release/darkpool-relayer) >> "$T/relayer.log" 2>&1 &
   RELAYER_PID=$!
   wait_http "http://127.0.0.1:$PORT_RELAYER/v1/info"
+  kill -0 "$RELAYER_PID" 2>/dev/null || { echo "relayer başlamadı; son satırlar:"; tail -5 "$T/relayer.log"; exit 1; }
   echo "==> relayer http://127.0.0.1:$PORT_RELAYER  (log: .testnet/relayer.log, gaz: $(bal "$RELAYER") MON)"
   echo "==> frontend: npm --prefix frontend run dev  → http://localhost:3000"
   wait $RELAYER_PID
+  ;;
+
+down)
+  for p in "$PORT_RELAYER" "$PORT_ENCLAVE"; do lsof -ti "tcp:$p" -sTCP:LISTEN | xargs kill 2>/dev/null || true; done
+  echo "relayer ve enclave durduruldu"
   ;;
 
 news)

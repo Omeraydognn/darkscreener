@@ -116,6 +116,10 @@ impl Indexer {
             st.cursor = to + 1;
             drop(st);
             from = to + 1;
+            if from <= head_number {
+                // Geride kalınca parçalar arka arkaya gelir; RPC hız sınırına takılmamak için nefes al.
+                tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            }
         }
         let mut st = self.state.write().await;
         st.finalized_block = head_number;
