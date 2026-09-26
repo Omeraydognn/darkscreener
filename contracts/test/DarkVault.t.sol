@@ -1,0 +1,683 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+
+import {Test, console2} from "forge-std/Test.sol";
+import {DarkVault} from "../src/DarkVault.sol";
+import {OwnerEnclaveRegistry} from "../src/registry/OwnerEnclaveRegistry.sol";
+import {ISpendVerifier} from "../src/interfaces/ISpendVerifier.sol";
+import {Groth16Verifier} from "../src/verifier/SpendVerifier.sol";
+import {DrandQuicknet} from "../src/lib/DrandQuicknet.sol";
+import {NoteLib} from "../src/lib/NoteLib.sol";
+import {TestToken, FeeOnTransferToken} from "./utils/TestTokens.sol";
+
+/// @notice Rust enclave + Circom kanıtlarıyla (test/fixtures/e2e.json) uçtan uca shielded test.
+/// Fixture'daki kapsüller drand quicknet round 1000'e kilitli; not ağacı indeksleri bu sıraya bağlı:
+///   GENESIS + 1     havuzlar (pencere 1)          GENESIS + 61   batch 1 settle
+///   GENESIS + 65    deposit × 5 (not 0..4)        GENESIS + 70   gizli emir × 5 (para üstü 5..9)
+///   GENESIS + 121   batch 2 settle                GENESIS + 122  iadeler (10, 11)
+///   roundTime(1000) claimNote × 3 (12..14)        sonra          withdraw × 7
+contract DarkVaultTest is Test {
+    uint256 constant GENESIS = 1_692_200_000;
+    uint256 constant WINDOW = 60;
+    uint256 constant UNLOCK = 1_692_806_364; // DrandQuicknet.roundTime(1000)
+
+    string fx;
+    DarkVault vault;
+    OwnerEnclaveRegistry registry;
+    TestToken usdc;
+    TestToken tokenA;
+    TestToken tokenB;
+    address owner = makeAddr("owner");
+    address relayer = makeAddr("relayer");
+    address enclave;
+
+    function setUp() public {
+        fx = vm.readFile("test/fixtures/e2e.json");
+        vm.chainId(vm.parseJsonUint(fx, ".chainId"));
+        vm.warp(GENESIS);
+
+        usdc = TestToken(_deployToken(".usdc", "USD Coin", "USDC", 6));
+        tokenA = TestToken(_deployToken(".tokenA", "Project A", "PRJA", 18));
+        tokenB = TestToken(_deployToken(".tokenB", "Project B", "PRJB", 18));
+
+        enclave = vm.parseJsonAddress(fx, ".enclave");
+        registry = new OwnerEnclaveRegistry(owner);
+        vm.prank(owner);
+        registry.register(enclave, bytes32(0));
+        ISpendVerifier verifier = ISpendVerifier(address(new Groth16Verifier()));
+        address p2 = deployCode("out/PoseidonT3.sol/PoseidonT3.json");
+        address p3 = deployCode("out/PoseidonT4.sol/PoseidonT4.json");
+
+        address vaultAddr = vm.parseJsonAddress(fx, ".vault");
+        deployCodeTo(
+            "DarkVault.sol:DarkVault",
+            abi.encode(
+                owner,
+                registry,
+                verifier,
+                p2,
+                p3,
+                address(usdc),
+                uint128(1e6),
+                GENESIS,
+                WINDOW,
+                vm.parseJsonUint(fx, ".feeBps")
+            ),
+            vaultAddr
+        );
+        vault = DarkVault(vaultAddr);
+    }
+
+    // ================================================================ yardımcılar
+
+    function _deployToken(string memory key, string memory name, string memory sym, uint8 dec)
+        internal
+        returns (address a)
+    {
+        a = vm.parseJsonAddress(fx, key);
+        deployCodeTo("TestTokens.sol:TestToken", abi.encode(name, sym, dec), a);
+    }
+
+    function _user(uint256 i) internal returns (address) {
+        return makeAddr(string.concat("user", vm.toString(i)));
+    }
+
+    function _str(string memory path) internal view returns (uint256) {
+        return vm.parseUint(vm.parseJsonString(fx, path));
+    }
+
+    function _u(string memory path) internal view returns (uint256) {
+        return uint256(vm.parseJsonBytes32(fx, path));
+    }
+
+    function _pair(string memory path) internal view returns (uint256[2] memory out) {
+        bytes32[] memory v = vm.parseJsonBytes32Array(fx, path);
+        out = [uint256(v[0]), uint256(v[1])];
+    }
+
+    function _proof(string memory p) internal view returns (DarkVault.SpendProof memory sp) {
+        sp.a = _pair(string.concat(p, ".a"));
+        sp.b = [_pair(string.concat(p, ".b0")), _pair(string.concat(p, ".b1"))];
+        sp.c = _pair(string.concat(p, ".c"));
+        sp.root = _u(string.concat(p, ".root"));
+        sp.nullifier = _u(string.concat(p, ".nullifier"));
+        sp.changeCommitment = _u(string.concat(p, ".changeCommitment"));
+        sp.spendCommitment = _u(string.concat(p, ".spendCommitment"));
+    }
+
+    function _order(uint256 i) internal view returns (bytes memory ct, DarkVault.SpendProof memory sp) {
+        string memory o = string.concat(".orders[", vm.toString(i), "]");
+        ct = vm.parseJsonBytes(fx, string.concat(o, ".ciphertext"));
+        sp = _proof(string.concat(o, ".proof"));
+    }
+
+    function _createPools() internal {
+        vm.warp(GENESIS + 1);
+        for (uint256 i = 0; i < 2; ++i) {
+            string memory p = string.concat(".pools[", vm.toString(i), "]");
+            address base = vm.parseJsonAddress(fx, string.concat(p, ".baseToken"));
+            uint128 baseAmt = uint128(_str(string.concat(p, ".base")));
+            uint128 quoteAmt = uint128(_str(string.concat(p, ".quote")));
+            TestToken(base).mint(owner, baseAmt);
+            usdc.mint(owner, quoteAmt);
+            vm.startPrank(owner);
+            TestToken(base).approve(address(vault), baseAmt);
+            usdc.approve(address(vault), quoteAmt);
+            vault.createPool(uint32(vm.parseJsonUint(fx, string.concat(p, ".poolId"))), base, baseAmt, quoteAmt, 1e15);
+            vm.stopPrank();
+        }
+    }
+
+    function _deposit(uint256 i) internal {
+        string memory n = string.concat(".notes[", vm.toString(i), "]");
+        address token = vm.parseJsonAddress(fx, string.concat(n, ".token"));
+        uint128 amount = uint128(_str(string.concat(n, ".amount")));
+        address user = _user(i);
+        TestToken(token).mint(user, amount);
+        vm.startPrank(user);
+        TestToken(token).approve(address(vault), amount);
+        vault.deposit(token, amount, _u(string.concat(n, ".secretHash")));
+        vm.stopPrank();
+    }
+
+    function _depositAll() internal {
+        vm.warp(GENESIS + 65);
+        for (uint256 i = 0; i < vm.parseJsonUint(fx, ".noteCount"); ++i) {
+            _deposit(i);
+        }
+    }
+
+    function _submitAll() internal {
+        vm.warp(GENESIS + 70);
+        for (uint256 i = 0; i < vm.parseJsonUint(fx, ".orderCount"); ++i) {
+            (bytes memory ct, DarkVault.SpendProof memory sp) = _order(i);
+            vm.prank(relayer); // gönderen önemsiz: kullanıcının adresi emirle ilişkilenmez
+            vault.submitShieldedOrder(ct, sp);
+        }
+    }
+
+    function _results(string memory b) internal view returns (DarkVault.Result[] memory rs) {
+        uint256 n = vm.parseJsonUint(fx, string.concat(b, ".resultCount"));
+        rs = new DarkVault.Result[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            string memory r = string.concat(b, ".results[", vm.toString(i), "]");
+            rs[i] = DarkVault.Result({
+                orderId: vm.parseJsonBytes32(fx, string.concat(r, ".orderId")),
+                status: uint8(vm.parseJsonUint(fx, string.concat(r, ".status"))),
+                commitment: vm.parseJsonBytes32(fx, string.concat(r, ".commitment")),
+                sealedResult: vm.parseJsonBytes(fx, string.concat(r, ".sealedResult"))
+            });
+        }
+    }
+
+    function _params(string memory b, uint64 window) internal view returns (DarkVault.SettleParams memory) {
+        return DarkVault.SettleParams({
+            window: window,
+            unlockRound: uint64(vm.parseJsonUint(fx, string.concat(b, ".unlockRound"))),
+            newSealedState: vm.parseJsonBytes(fx, string.concat(b, ".newSealedState")),
+            capsule: vm.parseJsonBytes(fx, string.concat(b, ".capsule")),
+            sealedSummary: vm.parseJsonBytes(fx, string.concat(b, ".sealedSummary")),
+            reservesCommitment: vm.parseJsonBytes32(fx, string.concat(b, ".reservesCommitment")),
+            signature: vm.parseJsonBytes(fx, string.concat(b, ".signature"))
+        });
+    }
+
+    function _settle1() internal {
+        vm.warp(GENESIS + 61);
+        vault.settleBatch(_params(".batch1", 1), _results(".batch1"));
+    }
+
+    function _settle2() internal {
+        vm.warp(GENESIS + 121);
+        vault.settleBatch(_params(".batch2", 2), _results(".batch2"));
+    }
+
+    function _throughSettle2() internal {
+        _createPools();
+        _settle1();
+        _depositAll();
+        _submitAll();
+        _settle2();
+    }
+
+    function _result(uint256 i) internal pure returns (string memory) {
+        return string.concat(".batch2.results[", vm.toString(i), "]");
+    }
+
+    function _status(uint256 i) internal view returns (uint256) {
+        return vm.parseJsonUint(fx, string.concat(_result(i), ".status"));
+    }
+
+    function _returnRefunded() internal {
+        vm.warp(GENESIS + 122);
+        for (uint256 i = 0; i < 5; ++i) {
+            if (_status(i) != 2) continue;
+            string memory r = _result(i);
+            vault.returnRefunded(
+                2,
+                vm.parseJsonBytes32(fx, string.concat(r, ".orderId")),
+                vm.parseJsonBytes32Array(fx, string.concat(r, ".proof"))
+            );
+        }
+    }
+
+    function _claim(uint256 i) internal {
+        string memory r = _result(i);
+        vault.claimNote(
+            2,
+            vm.parseJsonBytes32(fx, string.concat(r, ".orderId")),
+            _u(string.concat(r, ".commitment")),
+            vm.parseJsonBytes32(fx, string.concat(r, ".sealedResultHash")),
+            vm.parseJsonBytes32Array(fx, string.concat(r, ".proof"))
+        );
+    }
+
+    function _claimAll() internal {
+        vm.warp(UNLOCK);
+        for (uint256 i = 0; i < 5; ++i) {
+            if (_status(i) == 1) _claim(i);
+        }
+    }
+
+    function _withdrawArgs(uint256 i)
+        internal
+        view
+        returns (DarkVault.SpendProof memory sp, address token, uint128 amount, uint256 blinding, address to)
+    {
+        string memory w = string.concat(".withdrawals[", vm.toString(i), "]");
+        sp = _proof(string.concat(w, ".proof"));
+        token = vm.parseJsonAddress(fx, string.concat(w, ".token"));
+        amount = uint128(_str(string.concat(w, ".amount")));
+        blinding = _u(string.concat(w, ".spendBlinding"));
+        to = vm.parseJsonAddress(fx, string.concat(w, ".recipient"));
+    }
+
+    // ================================================================ uçtan uca
+
+    /// @notice Tam yaşam döngüsü: yatır → gizli emir → settle → iade/claim → çek.
+    ///         Sonunda vault'ta kalan = havuz rezervleri (enclave'in imzaladığı, 7 gün sonra açılan):
+    ///         Rust FM-AMM + Poseidon notları + Groth16 + kontrat muhasebesi birebir tutarlı.
+    function test_e2e_shieldedLifecycleConservesFunds() public {
+        _createPools();
+        _settle1();
+        _depositAll();
+        assertEq(vault.noteCount(), 5);
+        assertEq(vault.noteRoot(), _u(".treeAfterDeposits"), "not agaci != circomlib");
+
+        _submitAll();
+        assertEq(vault.ordersHash(2), vm.parseJsonBytes32(fx, ".batch2.ordersHash"), "orders hash != enclave");
+        assertEq(vault.noteCount(), 10);
+
+        _settle2();
+        (bytes32 root,, uint64 unlockTime,) = vault.batches(2);
+        assertEq(root, vm.parseJsonBytes32(fx, ".batch2.resultsRoot"));
+        assertEq(unlockTime, UNLOCK);
+
+        _returnRefunded();
+        vm.expectRevert(DarkVault.Locked.selector);
+        _claim(0);
+        _claimAll();
+        assertEq(vault.noteCount(), 15);
+
+        uint256 n = vm.parseJsonUint(fx, ".withdrawalCount");
+        for (uint256 i = 0; i < n; ++i) {
+            (DarkVault.SpendProof memory sp, address token, uint128 amount, uint256 blinding, address to) =
+                _withdrawArgs(i);
+            vault.withdraw(sp, token, amount, blinding, to);
+            assertEq(TestToken(token).balanceOf(to), amount);
+        }
+
+        // Korunum: vault'ta yalnızca LP rezervleri kaldı
+        uint256 q0 = _str(".batch2Summary.pools[0].quoteReserve");
+        uint256 q1 = _str(".batch2Summary.pools[1].quoteReserve");
+        assertEq(usdc.balanceOf(address(vault)), q0 + q1, "usdc");
+        assertEq(tokenA.balanceOf(address(vault)), _str(".batch2Summary.pools[0].baseReserve"), "tokenA");
+        assertEq(tokenB.balanceOf(address(vault)), _str(".batch2Summary.pools[1].baseReserve"), "tokenB");
+    }
+
+    // ================================================================ gizli emir saldırıları
+
+    function test_order_proofBoundToCiphertext() public {
+        _createPools();
+        _depositAll();
+        (bytes memory ct, DarkVault.SpendProof memory sp) = _order(0);
+        ct[100] ^= 0x01; // başka ciphertext -> ctxHash değişir
+        vm.expectRevert(DarkVault.InvalidSpendProof.selector);
+        vault.submitShieldedOrder(ct, sp);
+    }
+
+    function test_order_rejectsDoubleSpendUnknownRootAndTamper() public {
+        _createPools();
+        _depositAll();
+        (bytes memory ct, DarkVault.SpendProof memory sp) = _order(0);
+
+        DarkVault.SpendProof memory badRoot = _proof(".orders[0].proof");
+        badRoot.root = 12345;
+        vm.expectRevert(DarkVault.UnknownRoot.selector);
+        vault.submitShieldedOrder(ct, badRoot);
+
+        DarkVault.SpendProof memory inflated = _proof(".orders[0].proof");
+        inflated.spendCommitment = sp.spendCommitment + 1;
+        vm.expectRevert(DarkVault.InvalidSpendProof.selector);
+        vault.submitShieldedOrder(ct, inflated);
+
+        vault.submitShieldedOrder(ct, sp);
+        vm.expectRevert(DarkVault.DuplicateOrder.selector);
+        vault.submitShieldedOrder(ct, sp);
+
+        bytes memory other = vm.parseJsonBytes(fx, ".orders[0].ciphertext");
+        other[50] ^= 0x01;
+        vm.expectRevert(DarkVault.NullifierSpent.selector);
+        vault.submitShieldedOrder(other, sp);
+
+        vm.expectRevert(DarkVault.BadCiphertext.selector);
+        vault.submitShieldedOrder(new bytes(158), sp);
+    }
+
+    function test_withdraw_boundToRecipientAndOpening() public {
+        _throughSettle2();
+        _returnRefunded();
+        _claimAll();
+        (DarkVault.SpendProof memory sp, address token, uint128 amount, uint256 blinding, address to) = _withdrawArgs(0);
+
+        vm.expectRevert(DarkVault.InvalidSpendProof.selector);
+        vault.withdraw(sp, token, amount, blinding, makeAddr("thief"));
+
+        vm.expectRevert(DarkVault.SpendMismatch.selector);
+        vault.withdraw(sp, token, amount + 1, blinding, to);
+
+        vm.expectRevert(DarkVault.SpendMismatch.selector);
+        vault.withdraw(sp, address(tokenA), amount, blinding, to);
+
+        vault.withdraw(sp, token, amount, blinding, to);
+        vm.expectRevert(DarkVault.NullifierSpent.selector);
+        vault.withdraw(sp, token, amount, blinding, to);
+    }
+
+    function test_deposit_validations() public {
+        _createPools();
+        address u = makeAddr("u");
+        usdc.mint(u, 10e6);
+        vm.startPrank(u);
+        usdc.approve(address(vault), type(uint256).max);
+        vm.expectRevert(DarkVault.TokenNotAllowed.selector);
+        vault.deposit(makeAddr("random"), 1e6, 1);
+        vm.expectRevert(DarkVault.BelowMinDeposit.selector);
+        vault.deposit(address(usdc), 1e6 - 1, 1);
+        vm.expectRevert(DarkVault.BadField.selector);
+        vault.deposit(address(usdc), 1e6, NoteLib.SNARK_FIELD);
+        vault.deposit(address(usdc), 1e6, 1);
+        vm.stopPrank();
+        assertEq(vault.noteCount(), 1);
+    }
+
+    // ================================================================ claim / iade
+
+    function test_claimAndReturn_rejections() public {
+        _throughSettle2();
+        string memory r0 = _result(0);
+        bytes32 id0 = vm.parseJsonBytes32(fx, string.concat(r0, ".orderId"));
+        bytes32[] memory p0 = vm.parseJsonBytes32Array(fx, string.concat(r0, ".proof"));
+
+        // dolmuş emir iade yolundan döndürülemez
+        vm.expectRevert(DarkVault.InvalidProof.selector);
+        vault.returnRefunded(2, id0, p0);
+
+        vm.warp(UNLOCK);
+        bytes32 sealedHash = vm.parseJsonBytes32(fx, string.concat(r0, ".sealedResultHash"));
+        vm.expectRevert(DarkVault.InvalidProof.selector);
+        vault.claimNote(2, id0, 42, sealedHash, p0);
+
+        _claim(0);
+        vm.expectRevert(DarkVault.AlreadyDone.selector);
+        _claim(0);
+    }
+
+    // ================================================================ settlement saldırıları
+
+    function test_settle_rejectsTamperedResult() public {
+        _createPools();
+        _settle1();
+        _depositAll();
+        _submitAll();
+        vm.warp(GENESIS + 121);
+        DarkVault.SettleParams memory p = _params(".batch2", 2);
+        DarkVault.Result[] memory rs = _results(".batch2");
+        rs[3].status = 1; // iadeyi dolmuş gibi göster
+        vm.expectRevert(DarkVault.InvalidSigner.selector);
+        vault.settleBatch(p, rs);
+    }
+
+    function test_settle_rejectsDroppedResult() public {
+        _createPools();
+        _settle1();
+        _depositAll();
+        _submitAll();
+        vm.warp(GENESIS + 121);
+        DarkVault.Result[] memory full = _results(".batch2");
+        DarkVault.Result[] memory rs = new DarkVault.Result[](full.length - 1);
+        for (uint256 i = 0; i < rs.length; ++i) {
+            rs[i] = full[i];
+        }
+        DarkVault.SettleParams memory p = _params(".batch2", 2);
+        vm.expectRevert(DarkVault.ResultCountMismatch.selector);
+        vault.settleBatch(p, rs);
+    }
+
+    /// @notice Zincirdeki emir kümesi enclave'in işlediğinden farklıysa imzalı sonuç reddedilir.
+    function test_settle_rejectsWhenOnchainOrdersDifferFromEnclaveInput() public {
+        _createPools();
+        _settle1();
+        _depositAll();
+        vm.warp(GENESIS + 70);
+        for (uint256 i = 0; i < 4; ++i) {
+            (bytes memory ct, DarkVault.SpendProof memory sp) = _order(i);
+            vault.submitShieldedOrder(ct, sp);
+        }
+        vm.warp(GENESIS + 121);
+        DarkVault.SettleParams memory p = _params(".batch2", 2);
+        DarkVault.Result[] memory full = _results(".batch2");
+        DarkVault.Result[] memory four = new DarkVault.Result[](4);
+        for (uint256 i = 0; i < 4; ++i) {
+            four[i] = full[i];
+        }
+        vm.expectRevert(DarkVault.InvalidSigner.selector);
+        vault.settleBatch(p, four);
+    }
+
+    function test_settle_rejectsTamperedStateAndUnregisteredEnclave() public {
+        _createPools();
+        vm.warp(GENESIS + 61);
+        DarkVault.SettleParams memory p = _params(".batch1", 1);
+        DarkVault.Result[] memory rs = _results(".batch1");
+        p.newSealedState[20] ^= 0x01;
+        vm.expectRevert(DarkVault.InvalidSigner.selector);
+        vault.settleBatch(p, rs);
+
+        p = _params(".batch1", 1);
+        vm.prank(owner);
+        registry.revoke(enclave);
+        vm.expectRevert(DarkVault.InvalidSigner.selector);
+        vault.settleBatch(p, rs);
+    }
+
+    function test_settle_timingRules() public {
+        _createPools();
+        DarkVault.SettleParams memory p = _params(".batch1", 1);
+        DarkVault.Result[] memory rs = _results(".batch1");
+        vm.warp(GENESIS + 59);
+        vm.expectRevert(DarkVault.WindowOpen.selector);
+        vault.settleBatch(p, rs);
+
+        vm.warp(UNLOCK - 7 days + 1);
+        vm.expectRevert(DarkVault.UnlockTooEarly.selector);
+        vault.settleBatch(p, rs);
+
+        vm.warp(GENESIS + 61);
+        DarkVault.SettleParams memory p2 = _params(".batch2", 2);
+        DarkVault.Result[] memory rs2 = _results(".batch2");
+        vm.expectRevert(DarkVault.WrongWindow.selector);
+        vault.settleBatch(p2, rs2);
+
+        vault.settleBatch(p, rs);
+        vm.expectRevert(DarkVault.WrongWindow.selector);
+        vault.settleBatch(p, rs);
+    }
+
+    // ================================================================ kaçış kapağı
+
+    function test_escape_returnsUnsettledOrdersAsNotesAndFreezes() public {
+        _createPools();
+        _settle1();
+        _depositAll();
+        _submitAll();
+
+        vm.expectRevert(DarkVault.NotStuck.selector);
+        vault.activateEscape();
+        vm.warp(vault.windowEnd(2) + vault.ESCAPE_DELAY());
+        vault.activateEscape();
+
+        for (uint256 i = 0; i < 5; ++i) {
+            bytes32 id = keccak256(vm.parseJsonBytes(fx, string.concat(".orders[", vm.toString(i), "].ciphertext")));
+            vault.escapeReturnOrder(id); // herkes çağırabilir; not sahibine döner
+            vm.expectRevert(DarkVault.AlreadyDone.selector);
+            vault.escapeReturnOrder(id);
+        }
+        assertEq(vault.noteCount(), 15);
+
+        DarkVault.SettleParams memory p = _params(".batch2", 2);
+        DarkVault.Result[] memory rs = _results(".batch2");
+        vm.expectRevert(DarkVault.Escaped.selector);
+        vault.settleBatch(p, rs);
+        vm.expectRevert(DarkVault.Escaped.selector);
+        vault.deposit(address(usdc), 1e6, 1);
+        (bytes memory ct, DarkVault.SpendProof memory sp) = _order(0);
+        vm.expectRevert(DarkVault.Escaped.selector);
+        vault.submitShieldedOrder(ct, sp);
+    }
+
+    /// @notice Enclave settle ettikten sonra ölür: settle edilmiş sonuçlar yine claim edilir,
+    ///         geç emir not olarak döner, LP'ler 7 gün kilitli rezervleri açıp çeker.
+    function test_escape_afterSettlement_claimsReturnsAndLiquidity() public {
+        _throughSettle2();
+
+        vm.warp(GENESIS + 3 * WINDOW + 5); // pencere 4: enclave'in hiç işlemeyeceği emir
+        bytes memory lateCt = vm.parseJsonBytes(fx, ".lateOrder.ciphertext");
+        bytes32 lateId = vault.submitShieldedOrder(lateCt, _proof(".lateOrder.proof"));
+
+        vm.warp(vault.windowEnd(4) + vault.ESCAPE_DELAY());
+        vault.activateEscape();
+        vault.escapeReturnOrder(lateId);
+
+        bytes32 settledId = vm.parseJsonBytes32(fx, string.concat(_result(0), ".orderId"));
+        vm.expectRevert(DarkVault.AlreadySettled.selector);
+        vault.escapeReturnOrder(settledId);
+
+        (uint32[] memory ids, uint128[] memory base, uint128[] memory quote, bytes32 salt) = _revealArgs();
+        vm.expectRevert(DarkVault.Locked.selector);
+        vault.revealFinalReserves(ids, base, quote, salt);
+
+        vm.warp(UNLOCK);
+        vm.expectRevert(DarkVault.InvalidReveal.selector);
+        vault.revealFinalReserves(ids, base, quote, bytes32(uint256(salt) ^ 1));
+        vault.revealFinalReserves(ids, base, quote, salt);
+
+        vm.startPrank(owner);
+        vault.escapeWithdrawLiquidity(1, owner);
+        vault.escapeWithdrawLiquidity(2, owner);
+        vm.expectRevert(DarkVault.AlreadyDone.selector);
+        vault.escapeWithdrawLiquidity(1, owner);
+        vm.stopPrank();
+        assertEq(tokenA.balanceOf(owner), base[0]);
+        assertEq(tokenB.balanceOf(owner), base[1]);
+        assertEq(usdc.balanceOf(owner), uint256(quote[0]) + quote[1]);
+
+        _claim(0); // enclave olmadan
+    }
+
+    function test_escape_reclaimsUnsettledPool() public {
+        _createPools();
+        vm.warp(vault.windowEnd(1) + vault.ESCAPE_DELAY());
+        vault.activateEscape();
+        vm.prank(owner);
+        vault.escapeReclaimPool(1, owner);
+        assertEq(tokenA.balanceOf(owner), 1_000_000e18);
+    }
+
+    function _revealArgs()
+        internal
+        view
+        returns (uint32[] memory ids, uint128[] memory base, uint128[] memory quote, bytes32 salt)
+    {
+        uint256 n = vm.parseJsonUint(fx, ".batch2Summary.poolCount");
+        ids = new uint32[](n);
+        base = new uint128[](n);
+        quote = new uint128[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            string memory p = string.concat(".batch2Summary.pools[", vm.toString(i), "]");
+            ids[i] = uint32(vm.parseJsonUint(fx, string.concat(p, ".poolId")));
+            base[i] = uint128(_str(string.concat(p, ".baseReserve")));
+            quote[i] = uint128(_str(string.concat(p, ".quoteReserve")));
+        }
+        salt = vm.parseJsonBytes32(fx, ".batch2Summary.salt");
+    }
+
+    // ================================================================ yönetim
+
+    function test_createPool_rejectsFeeOnTransferAndDuplicates() public {
+        FeeOnTransferToken fee = new FeeOnTransferToken();
+        fee.mint(owner, 100e18);
+        usdc.mint(owner, 1_000e6);
+        vm.startPrank(owner);
+        fee.approve(address(vault), type(uint256).max);
+        usdc.approve(address(vault), type(uint256).max);
+        vm.expectRevert(DarkVault.FeeOnTransferToken.selector);
+        vault.createPool(9, address(fee), 10e18, 10e6, 1);
+        vm.expectRevert(DarkVault.BadPool.selector);
+        vault.createPool(9, address(usdc), 10e18, 10e6, 1);
+        vm.stopPrank();
+        vm.expectRevert();
+        vault.createPool(10, address(tokenA), 1, 1, 1);
+    }
+
+    function test_emptyWindowsAreSkipped() public {
+        _createPools();
+        _settle1();
+        _depositAll();
+        vm.warp(GENESIS + 4 * WINDOW + 5); // pencere 5
+        (bytes memory ct, DarkVault.SpendProof memory sp) = _order(0);
+        vault.submitShieldedOrder(ct, sp);
+        assertEq(vault.nextWindowToSettle(), 5);
+    }
+
+    // ================================================================ gas
+
+    /// @notice Ethereum fiyatlamasıyla ölçüm (Foundry, Monad'ın cold-page fiyatlamasını taklit etmez).
+    function test_gasProfile() public {
+        _createPools();
+        _settle1();
+        vm.warp(GENESIS + 65);
+        address user = _user(0);
+        usdc.mint(user, 100e6);
+        vm.prank(user);
+        usdc.approve(address(vault), 100e6);
+        uint256 secret = _u(".notes[0].secretHash");
+        vm.prank(user);
+        uint256 g = gasleft();
+        vault.deposit(address(usdc), 100e6, secret);
+        console2.log("deposit (Poseidon agac eklemesi)", g - gasleft());
+        for (uint256 i = 1; i < 5; ++i) {
+            _deposit(i);
+        }
+
+        vm.warp(GENESIS + 70);
+        (bytes memory ct, DarkVault.SpendProof memory sp) = _order(0);
+        g = gasleft();
+        vault.submitShieldedOrder(ct, sp);
+        console2.log("submitShieldedOrder (Groth16 + ekleme)", g - gasleft());
+        for (uint256 i = 1; i < 5; ++i) {
+            (ct, sp) = _order(i);
+            vault.submitShieldedOrder(ct, sp);
+        }
+
+        vm.warp(GENESIS + 121);
+        DarkVault.SettleParams memory p = _params(".batch2", 2);
+        DarkVault.Result[] memory rs = _results(".batch2");
+        g = gasleft();
+        vault.settleBatch(p, rs);
+        console2.log("settleBatch (5 emir)", g - gasleft());
+
+        _returnRefunded();
+        vm.warp(UNLOCK);
+        string memory r = _result(0);
+        bytes32 id = vm.parseJsonBytes32(fx, string.concat(r, ".orderId"));
+        uint256 c = _u(string.concat(r, ".commitment"));
+        bytes32 sh = vm.parseJsonBytes32(fx, string.concat(r, ".sealedResultHash"));
+        bytes32[] memory mp = vm.parseJsonBytes32Array(fx, string.concat(r, ".proof"));
+        g = gasleft();
+        vault.claimNote(2, id, c, sh, mp);
+        console2.log("claimNote", g - gasleft());
+        _claim(1);
+        _claim(2);
+
+        (DarkVault.SpendProof memory wsp, address token, uint128 amount, uint256 blinding, address to) =
+            _withdrawArgs(0);
+        g = gasleft();
+        vault.withdraw(wsp, token, amount, blinding, to);
+        console2.log("withdraw (Groth16 + ekleme)", g - gasleft());
+    }
+
+    // ================================================================ kütüphaneler
+
+    function test_drand_knownRound() public pure {
+        assertEq(DrandQuicknet.roundTime(1000), UNLOCK);
+        assertEq(DrandQuicknet.roundAt(DrandQuicknet.GENESIS), 1);
+        assertEq(DrandQuicknet.roundAt(DrandQuicknet.GENESIS + 3), 2);
+        assertEq(DrandQuicknet.roundAt(DrandQuicknet.GENESIS + 4), 3);
+    }
+
+    function testFuzz_drand_roundTrip(uint64 round) public pure {
+        vm.assume(round > 0 && round < type(uint64).max / 4);
+        assertEq(DrandQuicknet.roundAt(DrandQuicknet.roundTime(round)), round);
+    }
+}

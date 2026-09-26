@@ -1,0 +1,19 @@
+{
+  "name": "darkpool-sdk",
+  "private": true,
+  "description": "Dark Pool DEX istemci k\u00fct\u00fcphanesi: ECIES emir \u015fifreleme, notlar, kan\u0131tlar, relayer istemcisi",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "poseidon-lite": "^0.3.0",
+    "snarkjs": "0.7.6",
+    "viem": "2.56.9"
+  },
+  "exports": {
+    "./*": "./src/*"
+  }
+}

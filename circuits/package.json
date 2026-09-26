@@ -1,0 +1,14 @@
+{
+  "name": "darkpool-circuits",
+  "private": true,
+  "description": "Dark Pool DEX - shielded pool ZK devreleri (Circom + Groth16)",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "circomlib": "2.0.5",
+    "circomlibjs": "0.1.7",
+    "snarkjs": "0.7.6"
+  }
+}

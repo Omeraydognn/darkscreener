@@ -1,0 +1,38 @@
+# Yerel test:
+#   docker compose up -d --build enclave
+#   docker compose run --rm smoke
+services:
+  enclave:
+    build: .
+    image: darkpool/tee-server:dev
+    environment:
+      TEE_PROVIDER: local
+      # Restart'ta aynı anahtar -> zincirdeki sealed state okunabilir kalır
+      LOCAL_SEED_PATH: /data/seed.bin
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - enclave-data:/data
+
+  smoke:
+    image: darkpool/tee-server:dev
+    profiles: ["smoke"]
+    depends_on: [enclave]
+    entrypoint: ["/usr/local/bin/dev-client"]
+    environment:
+      DEV_CLIENT_URL: http://enclave:8080
+
+  # Monad testnet relayer: cp .env.relayer.example .env.relayer ve doldur (dosya git dışıdır)
+  relayer:
+    image: darkpool/tee-server:dev
+    profiles: ["relayer"]
+    depends_on: [enclave]
+    entrypoint: ["/usr/local/bin/darkpool-relayer"]
+    env_file: .env.relayer
+    environment:
+      ENCLAVE_URL: http://enclave:8080
+    ports:
+      - "127.0.0.1:8090:8090"
+
+volumes:
+  enclave-data:

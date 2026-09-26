@@ -1,0 +1,26 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc_version = "0.8.30"
+# Monad dokümanı Cancun'a kadar tam uyumluluk garanti ediyor; daha yenisine geçmeden doğrula.
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 1000
+via_ir = true
+fs_permissions = [{ access = "read", path = "./test/fixtures" }, { access = "read", path = "./out" }, { access = "read-write", path = "./deployments" }]
+# Poseidon elle optimize edilmiş assembly; via_ir maliyetini ~2 katına çıkarıyor (59k -> 30k/hash).
+# Ayrı deploy edilen kütüphane olduğu için farklı ayarla derlenmesi güvenli.
+additional_compiler_profiles = [{ name = "legacy", via_ir = false }]
+compilation_restrictions = [{ paths = "lib/poseidon-solidity/**", via_ir = false }]
+remappings = [
+  "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+  "forge-std/=lib/forge-std/src/",
+  "poseidon-solidity/=lib/poseidon-solidity/contracts/",
+]
+
+[rpc_endpoints]
+monad_testnet = "${MONAD_TESTNET_RPC}"
+
+[fmt]
+line_length = 120

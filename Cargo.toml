@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["tee-core", "tee-attest", "tee-server", "relayer"]
+
+[profile.release]
+# tlock unlock yolu catch_unwind'e güveniyor; "abort" kullanma.
+panic = "unwind"

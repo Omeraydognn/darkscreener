@@ -1,0 +1,26 @@
+[package]
+name = "darkpool-relayer"
+version = "0.1.0"
+edition = "2021"
+description = "Dark Pool DEX - Monad <-> enclave relayer (indexer, settler, claimer, gizli gonderim API)"
+
+[dependencies]
+dark-tee-core = { path = "../tee-core" }
+dark-tee-server = { path = "../tee-server" }
+alloy = { version = "2", features = ["providers", "provider-http", "rpc-types", "signer-local", "sol-types", "contract", "network", "reqwest"] }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sha3 = "0.10"
+tower-http = { version = "0.6", features = ["cors"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

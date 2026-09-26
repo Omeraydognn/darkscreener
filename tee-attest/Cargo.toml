@@ -1,0 +1,12 @@
+[package]
+name = "dark-tee-attest"
+version = "0.1.0"
+edition = "2021"
+description = "Dark Pool DEX - TEE saglayiciya ozgu katman (anahtar seed'i, guvenilir saat, attestation)"
+
+[dependencies]
+thiserror = "2"
+zeroize = "1"
+rand_core = { version = "0.6", features = ["getrandom"] }
+ureq = { version = "3", features = ["json"] }
+serde_json = "1"

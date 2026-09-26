@@ -1,0 +1,33 @@
+# Rust
+target/
+
+# Foundry — bağımlılıklar scripts/setup.sh ile sabit sürümlerden kurulur
+contracts/lib/
+contracts/out/
+contracts/cache/
+contracts/broadcast/*/31337/
+contracts/deployments/31337*.json
+
+# Node / ZK araçları ve üretilen büyük dosyalar
+node_modules/
+circuits/build/
+*.ptau
+*.zkey
+# Tören sonucu: verifier kontratı bununla eşleşir, frontend/fixture kanıtları bununla üretilir
+!circuits/keys/spend_final.zkey
+*.r1cs
+*.sym
+
+# Gizli bilgiler — asla commit etme
+.env
+.env.*
+!.env.*.example
+*.key
+*.pem
+secrets/
+seed.bin
+
+# İşletim sistemi
+.DS_Store
+.dev/
+.testnet/
