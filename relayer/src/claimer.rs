@@ -77,12 +77,7 @@ impl Claimer {
             let proof: Vec<FixedBytes<32>> = proof.into_iter().map(FixedBytes).collect();
             let res = match r.status {
                 OrderStatus::Refunded => {
-                    chain
-                        .send(
-                            &format!("returnRefunded {id}"),
-                            chain.vault.returnRefunded(batch_id, id, proof),
-                        )
-                        .await
+                    chain.send(&format!("returnRefunded {id}"), chain.vault.returnRefunded(batch_id, id, proof)).await
                 }
                 OrderStatus::Filled => {
                     let sealed_hash = FixedBytes(keccak(&r.sealed_result));
@@ -90,9 +85,7 @@ impl Claimer {
                     chain
                         .send(
                             &format!("claimNote {id}"),
-                            chain
-                                .vault
-                                .claimNote(batch_id, id, commitment, sealed_hash, proof),
+                            chain.vault.claimNote(batch_id, id, commitment, sealed_hash, proof),
                         )
                         .await
                 }

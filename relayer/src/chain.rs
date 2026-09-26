@@ -179,28 +179,19 @@ impl Chain {
         let sender = signer.address();
         // Herkese açık Monad RPC'si istek/sn sınırlıdır (-32011 / 429): sınırda üstel bekleyip yeniden dene.
         let client = alloy::rpc::client::ClientBuilder::default()
-            .layer(
-                alloy::transports::layers::RetryBackoffLayer::new_with_policy(
-                    12,
-                    400,
-                    300,
-                    // Monad: "-32011 requests limited to N/sec" standart 429 değil
-                    alloy::transports::layers::RateLimitRetryPolicy::default()
-                        .or(|e| e.as_error_resp().is_some_and(|r| r.code == -32011)),
-                ),
-            )
+            .layer(alloy::transports::layers::RetryBackoffLayer::new_with_policy(
+                12,
+                400,
+                300,
+                // Monad: "-32011 requests limited to N/sec" standart 429 değil
+                alloy::transports::layers::RateLimitRetryPolicy::default()
+                    .or(|e| e.as_error_resp().is_some_and(|r| r.code == -32011)),
+            ))
             .http(rpc_url.parse().context("RPC_URL")?);
-        let provider = ProviderBuilder::new()
-            .wallet(EthereumWallet::from(signer))
-            .connect_client(client)
-            .erased();
+        let provider = ProviderBuilder::new().wallet(EthereumWallet::from(signer)).connect_client(client).erased();
         let chain_id = provider.get_chain_id().await.context("chain id")?;
         let v = IDarkVault::new(vault, provider.clone());
-        let quote_token = v
-            .quoteToken()
-            .call()
-            .await
-            .context("vault.quoteToken (VAULT_ADDRESS doğru mu?)")?;
+        let quote_token = v.quoteToken().call().await.context("vault.quoteToken (VAULT_ADDRESS doğru mu?)")?;
         let fee = v.feeBps().call().await?;
         let registry = IEnclaveRegistry::new(v.registry().call().await?, provider.clone());
         let genesis_time = u64::try_from(v.genesisTime().call().await?)?;
@@ -210,10 +201,7 @@ impl Chain {
             _ => None,
         };
         let gateway = match &launchpad {
-            Some(l) => Some(IMonGateway::new(
-                l.gateway().call().await.context("launchpad.gateway")?,
-                provider.clone(),
-            )),
+            Some(l) => Some(IMonGateway::new(l.gateway().call().await.context("launchpad.gateway")?, provider.clone())),
             None => None,
         };
         Ok(Self {
@@ -239,10 +227,7 @@ impl Chain {
         call: CallBuilder<&DynProvider, D>,
     ) -> Result<TxHash> {
         let _guard = self.send_lock.lock().await;
-        let gas = call
-            .estimate_gas()
-            .await
-            .map_err(|e| anyhow!("{what}: {}", describe(&e)))?;
+        let gas = call.estimate_gas().await.map_err(|e| anyhow!("{what}: {}", describe(&e)))?;
         let pending = call
             .gas(with_margin(gas))
             .send()
@@ -266,11 +251,7 @@ impl Chain {
 
     pub async fn token_meta(&self, token: Address) -> Result<(String, String, u8)> {
         let t = IERC20Meta::new(token, self.provider.clone());
-        Ok((
-            t.name().call().await?,
-            t.symbol().call().await?,
-            t.decimals().call().await?,
-        ))
+        Ok((t.name().call().await?, t.symbol().call().await?, t.decimals().call().await?))
     }
 
     pub async fn latest_timestamp(&self) -> Result<u64> {

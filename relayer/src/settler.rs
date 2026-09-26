@@ -11,9 +11,7 @@ use dark_tee_core::{
     reveal::split_sealed_result,
     timelock,
 };
-use dark_tee_server::api::{
-    Amount, Bytes as HexBytes, Fixed, OrderDto, PoolInitDto, ProcessRequest, ProcessResponse,
-};
+use dark_tee_server::api::{Amount, Bytes as HexBytes, Fixed, OrderDto, PoolInitDto, ProcessRequest, ProcessResponse};
 
 use crate::{
     chain::{Chain, IDarkVault},
@@ -37,19 +35,13 @@ impl Enclave {
             .http
             .post(format!("{}/process", self.url))
             .header("content-type", "application/json")
-            .header(
-                dark_tee_server::app::RELAYER_SIG_HEADER,
-                format!("0x{}", hex::encode(sig)),
-            )
+            .header(dark_tee_server::app::RELAYER_SIG_HEADER, format!("0x{}", hex::encode(sig)))
             .body(body)
             .send()
             .await?;
         let status = resp.status();
         if !status.is_success() {
-            bail!(
-                "enclave {status}: {}",
-                resp.text().await.unwrap_or_default()
-            );
+            bail!("enclave {status}: {}", resp.text().await.unwrap_or_default());
         }
         Ok(resp.json().await?)
     }
@@ -76,14 +68,8 @@ pub async fn tick(chain: &Chain, index: &Indexer, enclave: &Enclave) -> Result<O
         let prev = if settled == 0 {
             None
         } else {
-            let b = st
-                .batches
-                .get(&settled)
-                .ok_or_else(|| anyhow!("batch {settled} not indexed yet"))?;
-            ensure!(
-                !b.new_sealed_state.is_empty(),
-                "batch {settled} data not indexed yet"
-            );
+            let b = st.batches.get(&settled).ok_or_else(|| anyhow!("batch {settled} not indexed yet"))?;
+            ensure!(!b.new_sealed_state.is_empty(), "batch {settled} data not indexed yet");
             Some(b.new_sealed_state.clone())
         };
         let rec = st.windows.get(&window).cloned().unwrap_or_default();
@@ -100,31 +86,16 @@ pub async fn tick(chain: &Chain, index: &Indexer, enclave: &Enclave) -> Result<O
         rec.orders.len()
     );
     let chain_pools = chain.vault.windowPools(window).call().await?;
-    ensure!(
-        chain_pools.poolsChain.0 == pools_hash(&input.new_pools),
-        "window {window}: pools mismatch"
-    );
+    ensure!(chain_pools.poolsChain.0 == pools_hash(&input.new_pools), "window {window}: pools mismatch");
 
     let resp = enclave.process(&req).await.context("enclave /process")?;
     let now = chain.latest_timestamp().await?;
     let signer = verify(chain, &req, &resp, settled, now)?;
-    ensure!(
-        chain.registry.isEnclave(signer).call().await?,
-        "signer {signer} is not a registered enclave"
-    );
+    ensure!(chain.registry.isEnclave(signer).call().await?, "signer {signer} is not a registered enclave");
 
     let (params, results, lots) = to_call(window, &resp);
-    chain
-        .send(
-            &format!(
-                "settleBatch #{} (window {window}, {} orders, {} lot sells)",
-                settled + 1,
-                results.len(),
-                lots.len()
-            ),
-            chain.vault.settleBatch(params, results, lots),
-        )
-        .await?;
+    let what = format!("settleBatch #{} (window {window}, {} orders, {} lot sells)", settled + 1, results.len(), lots.len());
+    chain.send(&what, chain.vault.settleBatch(params, results, lots)).await?;
     Ok(Some(settled + 1))
 }
 
@@ -132,23 +103,10 @@ pub async fn tick(chain: &Chain, index: &Indexer, enclave: &Enclave) -> Result<O
 fn check_window_integrity(rec: &WindowRec) -> Result<()> {
     let mut next = [0u32; dark_tee_core::batch::SHARDS];
     for o in &rec.orders {
-        ensure!(
-            o.order_id.0 == keccak(&o.ciphertext),
-            "orderId != keccak(ciphertext) for {}",
-            o.order_id
-        );
+        ensure!(o.order_id.0 == keccak(&o.ciphertext), "orderId != keccak(ciphertext) for {}", o.order_id);
         let s = o.shard as usize;
-        ensure!(
-            s == dark_tee_core::batch::shard_of(&o.order_id.0),
-            "wrong shard for {}",
-            o.order_id
-        );
-        ensure!(
-            o.index == next[s],
-            "shard {s}: index gap at {} (expected {})",
-            o.index,
-            next[s]
-        );
+        ensure!(s == dark_tee_core::batch::shard_of(&o.order_id.0), "wrong shard for {}", o.order_id);
+        ensure!(o.index == next[s], "shard {s}: index gap at {} (expected {})", o.index, next[s]);
         next[s] += 1;
     }
     Ok(())
@@ -158,21 +116,11 @@ fn check_window_integrity(rec: &WindowRec) -> Result<()> {
 /// satışının) zincirdeki `sealedResult`'ının sonu. Notu olmayan lot (ör. iade edilmiş emir)
 /// `None` ile gider ve enclave satışı reddeder; lotun sonucu indekste yoksa settle edilmez.
 fn lot_memo(st: &IndexState, lot: &alloy::primitives::B256) -> Result<Option<HexBytes>> {
-    let (_, r) = st
-        .result(lot)
-        .ok_or_else(|| anyhow!("lot {lot}: result not indexed yet"))?;
-    Ok(split_sealed_result(&r.sealedResult)
-        .1
-        .map(|m| HexBytes(m.to_vec())))
+    let (_, r) = st.result(lot).ok_or_else(|| anyhow!("lot {lot}: result not indexed yet"))?;
+    Ok(split_sealed_result(&r.sealedResult).1.map(|m| HexBytes(m.to_vec())))
 }
 
-fn build_request(
-    chain: &Chain,
-    st: &IndexState,
-    batch_id: u64,
-    prev: Option<Bytes>,
-    rec: &WindowRec,
-) -> Result<ProcessRequest> {
+fn build_request(chain: &Chain, st: &IndexState, batch_id: u64, prev: Option<Bytes>, rec: &WindowRec) -> Result<ProcessRequest> {
     let mut orders = Vec::with_capacity(rec.orders.len());
     for o in &rec.orders {
         orders.push(OrderDto {
@@ -207,85 +155,36 @@ fn build_request(
 }
 
 /// Kontratın `settleBatch` içindeki kontrollerinin aynısı; imzacı adresini döner.
-fn verify(
-    chain: &Chain,
-    req: &ProcessRequest,
-    resp: &ProcessResponse,
-    settled: u64,
-    now: u64,
-) -> Result<Address> {
+fn verify(chain: &Chain, req: &ProcessRequest, resp: &ProcessResponse, settled: u64, now: u64) -> Result<Address> {
     let s = Settlement::from(&resp.settlement);
     let input: BatchInput = req.clone().into();
-    ensure!(
-        s.chain_id == chain.chain_id && s.vault == chain.vault.address().0 .0,
-        "chain/vault binding"
-    );
+    ensure!(s.chain_id == chain.chain_id && s.vault == chain.vault.address().0 .0, "chain/vault binding");
     ensure!(s.batch_id == settled + 1, "batch id");
-    ensure!(
-        s.quote_token == chain.quote_token.0 .0 && s.fee_bps == chain.fee_bps,
-        "quote/fee binding"
-    );
+    ensure!(s.quote_token == chain.quote_token.0 .0 && s.fee_bps == chain.fee_bps, "quote/fee binding");
     ensure!(s.orders_hash == orders_hash(&input.orders), "orders hash");
     ensure!(s.pools_hash == pools_hash(&input.new_pools), "pools hash");
-    let prev = input
-        .prev_sealed_state
-        .as_deref()
-        .map(dark_tee_core::state::state_hash)
-        .unwrap_or([0u8; 32]);
+    let prev = input.prev_sealed_state.as_deref().map(dark_tee_core::state::state_hash).unwrap_or([0u8; 32]);
     ensure!(s.prev_state_hash == prev, "state chain");
-    ensure!(
-        s.new_state_hash == keccak(&resp.new_sealed_state.0),
-        "new state hash"
-    );
+    ensure!(s.new_state_hash == keccak(&resp.new_sealed_state.0), "new state hash");
     ensure!(s.capsule_hash == keccak(&resp.capsule.0), "capsule hash");
-    ensure!(
-        s.summary_hash == keccak(&resp.sealed_summary.0),
-        "summary hash"
-    );
+    ensure!(s.summary_hash == keccak(&resp.sealed_summary.0), "summary hash");
     ensure!(resp.results.len() == input.orders.len(), "result count");
     let results: Vec<OrderResult> = resp.results.iter().map(OrderResult::from).collect();
     ensure!(s.results_root == results_root(&results), "results root");
     // Kontrat penceredeki HER lot satışı için tam olarak bir güncelleme ister (lotSellCount).
-    let lot_sells: Vec<[u8; 32]> = input
-        .orders
-        .iter()
-        .zip(&results)
-        .filter(|(o, _)| o.is_lot_sell)
-        .map(|(_, r)| r.order_id)
-        .collect();
+    let lot_sells: Vec<[u8; 32]> =
+        input.orders.iter().zip(&results).filter(|(o, _)| o.is_lot_sell).map(|(_, r)| r.order_id).collect();
     let lots: Vec<LotUpdate> = resp.lots.iter().map(LotUpdate::from).collect();
-    ensure!(
-        lots.iter().map(|l| l.sell_order_id).collect::<Vec<_>>() == lot_sells,
-        "lot updates do not match the window's lot sells"
-    );
+    ensure!(lots.iter().map(|l| l.sell_order_id).collect::<Vec<_>>() == lot_sells, "lot updates do not match the window's lot sells");
     ensure!(s.lots_hash == lots_hash(&lots), "lots hash");
     let opens = timelock::round_time(s.unlock_round);
-    ensure!(
-        opens >= now + timelock::LOCK_SECONDS,
-        "unlock earlier than 7 days (enclave clock behind chain?)"
-    );
-    ensure!(
-        opens <= now + timelock::LOCK_SECONDS + 86_400,
-        "unlock later than 8 days"
-    );
-    ensure!(
-        timelock::capsule_round(&resp.capsule.0)? == s.unlock_round,
-        "capsule round"
-    );
-    Ok(Address::from(recover_address(
-        &s.digest(),
-        &resp.signature.0,
-    )?))
+    ensure!(opens >= now + timelock::LOCK_SECONDS, "unlock earlier than 7 days (enclave clock behind chain?)");
+    ensure!(opens <= now + timelock::LOCK_SECONDS + 86_400, "unlock later than 8 days");
+    ensure!(timelock::capsule_round(&resp.capsule.0)? == s.unlock_round, "capsule round");
+    Ok(Address::from(recover_address(&s.digest(), &resp.signature.0)?))
 }
 
-fn to_call(
-    window: u64,
-    resp: &ProcessResponse,
-) -> (
-    IDarkVault::SettleParams,
-    Vec<IDarkVault::Result>,
-    Vec<IDarkVault::LotUpdate>,
-) {
+fn to_call(window: u64, resp: &ProcessResponse) -> (IDarkVault::SettleParams, Vec<IDarkVault::Result>, Vec<IDarkVault::LotUpdate>) {
     let params = IDarkVault::SettleParams {
         window,
         unlockRound: resp.settlement.unlock_round,

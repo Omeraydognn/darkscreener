@@ -55,14 +55,8 @@ pub struct Project {
 
 impl Project {
     fn check(&self) -> Result<()> {
-        ensure!(
-            !self.name.trim().is_empty() && self.name.len() <= 48,
-            "name length"
-        );
-        ensure!(
-            !self.symbol.trim().is_empty() && self.symbol.len() <= 11,
-            "symbol length"
-        );
+        ensure!(!self.name.trim().is_empty() && self.name.len() <= 48, "name length");
+        ensure!(!self.symbol.trim().is_empty() && self.symbol.len() <= 11, "symbol length");
         for (field, v, max) in [
             ("description", &self.description, 4_000),
             ("team", &self.team, 4_000),
@@ -81,10 +75,7 @@ impl Project {
             ("whitepaper", &self.whitepaper),
             ("logo", &self.logo),
         ] {
-            ensure!(
-                v.is_empty() || (v.starts_with("https://") && v.len() <= 200),
-                "{field} must be an https URL"
-            );
+            ensure!(v.is_empty() || (v.starts_with("https://") && v.len() <= 200), "{field} must be an https URL");
         }
         Ok(())
     }
@@ -125,9 +116,7 @@ impl NewsStore {
     /// `projects_file`: {"1": Project, ...}; `news_file`: JSON satırları (kalıcı kayıt).
     pub fn load(projects_file: Option<PathBuf>, news_file: Option<PathBuf>) -> Result<Self> {
         let projects: BTreeMap<u32, Project> = match &projects_file {
-            Some(p) => serde_json::from_str(
-                &fs::read_to_string(p).with_context(|| format!("{}", p.display()))?,
-            )?,
+            Some(p) => serde_json::from_str(&fs::read_to_string(p).with_context(|| format!("{}", p.display()))?)?,
             None => BTreeMap::new(),
         };
         let mut posts = Vec::new();
@@ -138,12 +127,7 @@ impl NewsStore {
                 }
             }
         }
-        Ok(Self {
-            projects: Mutex::new(projects),
-            projects_path: projects_file,
-            path: news_file,
-            posts: Mutex::new(posts),
-        })
+        Ok(Self { projects: Mutex::new(projects), projects_path: projects_file, path: news_file, posts: Mutex::new(posts) })
     }
 
     pub fn project(&self, pool_id: u32) -> Option<Project> {
@@ -153,26 +137,14 @@ impl NewsStore {
     /// Launchpad ile açılmış bir projenin meta verisini kaydeder. `raw` (tam JSON metni) zincirdeki
     /// `metadataHash`'e eşit olmalıdır: meta veri açılış işlemine bağlıdır, sonradan kimse
     /// değiştiremez. Haber imzacısı zincirdeki `creator`'dır.
-    pub fn register_launched(
-        &self,
-        pool_id: u32,
-        raw: &str,
-        metadata_hash: [u8; 32],
-        creator: Address,
-    ) -> Result<Project> {
+    pub fn register_launched(&self, pool_id: u32, raw: &str, metadata_hash: [u8; 32], creator: Address) -> Result<Project> {
         ensure!(raw.len() <= 20_000, "metadata too large");
-        ensure!(
-            keccak256(raw.as_bytes()).0 == metadata_hash,
-            "metadata does not match on-chain metadataHash"
-        );
+        ensure!(keccak256(raw.as_bytes()).0 == metadata_hash, "metadata does not match on-chain metadataHash");
         let mut project: Project = serde_json::from_str(raw).context("metadata json")?;
         project.check()?;
         project.news_signers = vec![creator];
         let mut projects = self.projects.lock().unwrap();
-        ensure!(
-            !projects.contains_key(&pool_id),
-            "project already registered"
-        );
+        ensure!(!projects.contains_key(&pool_id), "project already registered");
         projects.insert(pool_id, project.clone());
         if let Some(path) = &self.projects_path {
             let tmp = path.with_extension("json.tmp");
@@ -184,32 +156,14 @@ impl NewsStore {
 
     pub fn verify(&self, post: &NewsPost, now: u64) -> Result<Address> {
         let project = self.project(post.pool_id).context("unknown project")?;
-        ensure!(
-            !post.title.trim().is_empty() && post.title.len() <= MAX_TITLE,
-            "title length"
-        );
+        ensure!(!post.title.trim().is_empty() && post.title.len() <= MAX_TITLE, "title length");
         ensure!(post.body.len() <= MAX_BODY, "body length");
-        ensure!(
-            post.url.is_empty() || post.url.starts_with("https://"),
-            "url must be https"
-        );
-        ensure!(
-            post.timestamp.abs_diff(now) <= MAX_CLOCK_SKEW,
-            "timestamp too far from server time"
-        );
+        ensure!(post.url.is_empty() || post.url.starts_with("https://"), "url must be https");
+        ensure!(post.timestamp.abs_diff(now) <= MAX_CLOCK_SKEW, "timestamp too far from server time");
         let sig: Signature = post.signature.parse().context("signature")?;
-        let signer = sig.recover_address_from_msg(message(
-            post.pool_id,
-            post.timestamp,
-            &post.title,
-            &post.body,
-            &post.url,
-        ))?;
+        let signer = sig.recover_address_from_msg(message(post.pool_id, post.timestamp, &post.title, &post.body, &post.url))?;
         if !project.news_signers.contains(&signer) {
-            bail!(
-                "signer {signer} is not authorized for project {}",
-                post.pool_id
-            );
+            bail!("signer {signer} is not authorized for project {}", post.pool_id);
         }
         Ok(signer)
     }
@@ -217,15 +171,9 @@ impl NewsStore {
     pub fn add(&self, mut post: NewsPost, now: u64) -> Result<NewsPost> {
         post.signer = Some(self.verify(&post, now)?);
         let mut posts = self.posts.lock().unwrap();
-        ensure!(
-            !posts.iter().any(|p| p.signature == post.signature),
-            "duplicate post"
-        );
+        ensure!(!posts.iter().any(|p| p.signature == post.signature), "duplicate post");
         if let Some(path) = &self.path {
-            let mut f = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)?;
+            let mut f = fs::OpenOptions::new().create(true).append(true).open(path)?;
             writeln!(f, "{}", serde_json::to_string(&post)?)?;
         }
         posts.push(post.clone());
@@ -235,11 +183,7 @@ impl NewsStore {
     /// En yeniden eskiye.
     pub fn list(&self, pool: Option<u32>, limit: usize) -> Vec<NewsPost> {
         let posts = self.posts.lock().unwrap();
-        let mut out: Vec<NewsPost> = posts
-            .iter()
-            .filter(|p| pool.is_none_or(|id| p.pool_id == id))
-            .cloned()
-            .collect();
+        let mut out: Vec<NewsPost> = posts.iter().filter(|p| pool.is_none_or(|id| p.pool_id == id)).cloned().collect();
         out.sort_by_key(|p| std::cmp::Reverse(p.timestamp));
         out.truncate(limit);
         out
@@ -255,25 +199,13 @@ mod tests {
         let mut projects = BTreeMap::new();
         projects.insert(
             1,
-            Project {
-                name: "A".into(),
-                symbol: "A".into(),
-                news_signers: vec![signer],
-                ..Default::default()
-            },
+            Project { name: "A".into(), symbol: "A".into(), news_signers: vec![signer], ..Default::default() },
         );
-        NewsStore {
-            projects: Mutex::new(projects),
-            projects_path: None,
-            path: None,
-            posts: Mutex::new(vec![]),
-        }
+        NewsStore { projects: Mutex::new(projects), projects_path: None, path: None, posts: Mutex::new(vec![]) }
     }
 
     fn post(key: &PrivateKeySigner, pool: u32, ts: u64, title: &str) -> NewsPost {
-        let sig = key
-            .sign_message_sync(message(pool, ts, title, "body", "").as_bytes())
-            .unwrap();
+        let sig = key.sign_message_sync(message(pool, ts, title, "body", "").as_bytes()).unwrap();
         NewsPost {
             pool_id: pool,
             title: title.into(),
@@ -292,12 +224,7 @@ mod tests {
         let s = store(team.address());
         let now = 1_800_000_000;
 
-        assert_eq!(
-            s.add(post(&team, 1, now, "Mainnet tarihi"), now)
-                .unwrap()
-                .signer,
-            Some(team.address())
-        );
+        assert_eq!(s.add(post(&team, 1, now, "Mainnet tarihi"), now).unwrap().signer, Some(team.address()));
         assert!(s.add(post(&stranger, 1, now, "sahte"), now).is_err());
         assert!(s.add(post(&team, 2, now, "baska proje"), now).is_err());
         assert!(s.add(post(&team, 1, now - 3600, "eski"), now).is_err());
@@ -320,14 +247,9 @@ mod tests {
         let hash = keccak256(raw.as_bytes()).0;
         assert!(s.register_launched(1000, raw, [0; 32], creator).is_err());
         let bad = r#"{"name":"X","symbol":"X","website":"http://insecure"}"#;
-        assert!(s
-            .register_launched(1001, bad, keccak256(bad.as_bytes()).0, creator)
-            .is_err());
+        assert!(s.register_launched(1001, bad, keccak256(bad.as_bytes()).0, creator).is_err());
         let p = s.register_launched(1000, raw, hash, creator).unwrap();
         assert_eq!(p.news_signers, vec![creator]);
-        assert!(
-            s.register_launched(1000, raw, hash, creator).is_err(),
-            "no overwrite"
-        );
+        assert!(s.register_launched(1000, raw, hash, creator).is_err(), "no overwrite");
     }
 }

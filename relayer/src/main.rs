@@ -44,26 +44,16 @@ fn env_or<T: std::str::FromStr>(name: &str, default: T) -> Result<T> {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
 
-    let signer: PrivateKeySigner = env("RELAYER_PRIVATE_KEY")?
-        .trim()
-        .parse()
-        .context("RELAYER_PRIVATE_KEY")?;
+    let signer: PrivateKeySigner = env("RELAYER_PRIVATE_KEY")?.trim().parse().context("RELAYER_PRIVATE_KEY")?;
     let vault: Address = env("VAULT_ADDRESS")?.parse().context("VAULT_ADDRESS")?;
     let chain = Arc::new(chain::Chain::connect(&env("RPC_URL")?, vault, signer.clone()).await?);
-    let index = Arc::new(index::Indexer::new(
-        env_or("DEPLOY_BLOCK", 0u64)?,
-        env_or("LOG_CHUNK", 100u64)?,
-    ));
+    let index = Arc::new(index::Indexer::new(env_or("DEPLOY_BLOCK", 0u64)?, env_or("LOG_CHUNK", 100u64)?));
     let enclave = Arc::new(settler::Enclave {
         url: env_or("ENCLAVE_URL", "http://127.0.0.1:8080".to_string())?,
-        http: reqwest::Client::builder()
-            .timeout(Duration::from_secs(60))
-            .build()?,
+        http: reqwest::Client::builder().timeout(Duration::from_secs(60)).build()?,
         signer,
     });
     let poll = Duration::from_millis(env_or("POLL_MS", 1000u64)?);
@@ -76,12 +66,7 @@ async fn main() -> Result<()> {
 
     // indexer + settler + claimer tek döngüde, sırayla: settle kararı güncel indekse dayanır.
     {
-        let (chain, index, enclave, revealer) = (
-            chain.clone(),
-            index.clone(),
-            enclave.clone(),
-            revealer.clone(),
-        );
+        let (chain, index, enclave, revealer) = (chain.clone(), index.clone(), enclave.clone(), revealer.clone());
         tokio::spawn(async move {
             let mut claimer = claimer::Claimer::default();
             let mut price = match std::env::var("MON_PRICE_SOURCE").as_deref() {
@@ -100,10 +85,7 @@ async fn main() -> Result<()> {
                 if let Err(e) = claimer.tick(&chain, &index).await {
                     tracing::warn!(error = %e, "claimer");
                 }
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
                 match revealer.tick(&index, now).await {
                     Ok(0) => {}
                     Ok(n) => tracing::info!(revealed = n, "batches unlocked via drand"),
@@ -128,20 +110,13 @@ async fn main() -> Result<()> {
         news,
         tokens: Default::default(),
         demo_history: match std::env::var_os("DEMO_HISTORY_FILE") {
-            Some(p) => {
-                serde_json::from_str(&std::fs::read_to_string(&p).context("DEMO_HISTORY_FILE")?)
-                    .context("DEMO_HISTORY_FILE json")?
-            }
+            Some(p) => serde_json::from_str(&std::fs::read_to_string(&p).context("DEMO_HISTORY_FILE")?).context("DEMO_HISTORY_FILE json")?,
             None => Default::default(),
         },
     });
     let addr = env_or("LISTEN_ADDR", "0.0.0.0:8090".to_string())?;
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!(%addr, "api listening");
-    axum::serve(
-        listener,
-        api::router(ctx).into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await?;
+    axum::serve(listener, api::router(ctx).into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
 }
